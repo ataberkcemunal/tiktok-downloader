@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         TikTok Downloader
-// @version      0.1
+// @version      0.2.11
 // @description  Adds a download button to TikTok videos and photo posts that saves the best quality without a watermark.
 // @match        https://www.tiktok.com/*
 // @grant        none
@@ -44,6 +44,8 @@
   "use strict";
 
   const AUTO_START = true;
+  /* Set by build.js to the userscript's version. */
+  const VERSION = "0.2.11";
   const HOST_TAG = "tiktok-downloader";
   const LOG = "[TikTok Downloader]";
   const CODEC_SETTING = "tiktokDownloader.codec";
@@ -656,6 +658,8 @@
     ":host([data-row]) .unit + .unit{margin:0}",
     ":host([data-row]) button{width:32px;height:32px}",
     ":host([data-row]) svg{width:18px;height:18px}",
+    /* Moved under the row when it doesn't fit in it. */
+    ":host([data-below]){margin-top:12px;align-self:flex-start}",
     /* Under a story, among its round buttons: side by side, no background and no label. */
     ":host([data-story]){flex-direction:row;gap:4px;margin:0}",
     ":host([data-story]) .unit{padding:0}",
@@ -1038,16 +1042,29 @@
          the address shows which video it is. */
       const favorite = document.querySelector('[data-e2e="browse-favorite-icon"]')?.closest("button");
       const row = favorite?.parentElement;
-      if (row?.parentElement) {
+      /* The row is the left half of a line whose right half holds the share icons. */
+      const line = row?.parentElement?.parentElement;
+      if (line?.parentElement) {
         const id = location.pathname.match(/\/(?:video|photo)\/(\d{8,})/)?.[1] || null;
-        const existing = row.parentElement.querySelector(":scope > " + HOST_TAG);
-        if (!(existing && existing.dataset.id === id)) {
+        const existing = row.parentElement.querySelector(":scope > " + HOST_TAG) ||
+          line.parentElement.querySelector(":scope > " + HOST_TAG + "[data-below]");
+        let host = existing && existing.dataset.id === id ? existing : null;
+        if (!host) {
           existing?.remove();
           if (id) {
-            const host = makeActionHost(id, favorite, { row: true });
+            host = makeActionHost(id, favorite, { row: true });
             row.after(host);
             hosts.add(host);
           }
+        }
+        /* Squeezed against the share icons (the halves shrink rather than overlap), it goes on a
+           line of its own under the row instead, labels and all. Checked again on every scan,
+           since the labels only appear once the post's details are known. */
+        const group = line.querySelector('[data-e2e="browse-share-group"]');
+        if (host && !("below" in host.dataset) && group &&
+          host.getBoundingClientRect().right > group.getBoundingClientRect().left - 16) {
+          host.dataset.below = "";
+          line.after(host);
         }
       }
       /* A story (opened from a profile picture): its round buttons under it, like and share,
@@ -1152,6 +1169,7 @@
       return;
     }
     startListening();
+    console.info(LOG, "version " + VERSION);
     if (window.__tiktokDownloader) {
       window.__tiktokDownloader.stop();
       window.__tiktokDownloader = null;
