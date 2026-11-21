@@ -504,28 +504,32 @@
      post has a second one under it, for every photo. */
   const ACTION_CSS = [
     ":host{all:initial;display:flex;flex-direction:column;align-items:center;margin-top:var(--gap,0px)}",
-    ".unit{display:flex;flex-direction:column;align-items:center}",
+    /* Sizes and spaces are copied from the Share button (set by makeActionHost): the space above
+       its circle, the circle and icon sizes, and the space between the circle and its label. */
+    ".unit{display:flex;flex-direction:column;align-items:center;padding-top:var(--pad,0px)}",
     ".unit[hidden]{display:none}",
-    ".unit + .unit{margin-top:var(--unit-gap,12px)}",
-    "button{all:unset;box-sizing:border-box;width:48px;height:48px;border-radius:999px;display:grid;place-items:center;",
+    ".unit + .unit{margin-top:var(--unit-gap,0px)}",
+    "button{all:unset;box-sizing:border-box;width:var(--size,48px);height:var(--size,48px);border-radius:999px;display:grid;place-items:center;",
     "cursor:pointer;background:var(--circle,rgba(22,24,35,.06));color:var(--fg,currentColor);transition:transform .1s,opacity .15s}",
     "button:hover{opacity:.75}",
     "button:active{transform:scale(.9)}",
     "button:focus-visible{outline:2px solid currentColor;outline-offset:2px}",
-    "svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}",
+    "svg{width:var(--icon,24px);height:var(--icon,24px);fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}",
     "button.busy svg{animation:spin .8s linear infinite}",
     "@keyframes spin{to{transform:rotate(360deg)}}",
-    ".percent{font:700 12px/1 -apple-system,sans-serif}",
-    ".label{font:700 12px/16px -apple-system,sans-serif;color:var(--label,currentColor);text-align:center;white-space:nowrap}",
+    ".percent{font:700 12px/1 var(--font,-apple-system,sans-serif)}",
+    ".label{margin-top:var(--label-gap,0px);font:700 12px/16px var(--font,-apple-system,sans-serif);color:var(--label,currentColor);text-align:center;white-space:nowrap}",
     /* In the viewer opened from a grid, the buttons sit in a row: a 32 px circle with its label
        beside it. */
     ":host([data-row]){flex-direction:row;gap:20px;margin:0}",
-    ":host([data-row]) .unit{flex-direction:row;gap:6px}",
+    ":host([data-row]) .unit{flex-direction:row;gap:6px;padding:0}",
+    ":host([data-row]) .label{margin:0}",
     ":host([data-row]) .unit + .unit{margin:0}",
     ":host([data-row]) button{width:32px;height:32px}",
     ":host([data-row]) svg{width:18px;height:18px}",
     /* Under a story, among its round buttons: side by side, no background and no label. */
     ":host([data-story]){flex-direction:row;gap:4px;margin:0}",
+    ":host([data-story]) .unit{padding:0}",
     ":host([data-story]) .unit + .unit{margin:0}",
     ":host([data-story]) button{background:transparent}",
     ":host([data-story]) .label{display:none}",
@@ -542,10 +546,24 @@
     });
     const label = share.querySelector("strong");
     const svg = share.querySelector("svg");
+    const labelStyle = label && getComputedStyle(label);
+    /* The layout: Share's icon box (its circle, or a bare icon in the For You feed) and label,
+       measured from the box Share sits in. */
+    const box = share.parentElement?.getBoundingClientRect();
+    const iconBox = share.firstElementChild?.getBoundingClientRect();
+    const labelBox = label?.getBoundingClientRect();
+    const svgBox = svg?.getBoundingClientRect();
+    const px = value => Math.max(0, Math.round(value)) + "px";
+    const measured = box && iconBox && iconBox.width >= 16 && iconBox.height >= 16;
     return {
       circle: circle ? getComputedStyle(circle).backgroundColor : "",
       fg: svg ? getComputedStyle(svg).color : "",
-      label: label ? getComputedStyle(label).color : "",
+      label: labelStyle ? labelStyle.color : "",
+      font: labelStyle ? labelStyle.fontFamily : "",
+      size: measured ? px(Math.max(iconBox.width, iconBox.height)) : "",
+      icon: svgBox && svgBox.width >= 12 ? px(Math.min(svgBox.width, 28)) : "",
+      pad: measured ? px(iconBox.top - box.top) : "",
+      labelGap: measured && labelBox ? px(labelBox.top - iconBox.bottom) : "",
     };
   }
 
@@ -562,9 +580,16 @@
     const style = document.createElement("style");
     style.textContent = ACTION_CSS;
     const colours = shareStyle(share);
-    if (colours.circle) host.style.setProperty("--circle", colours.circle);
+    /* No round background behind Share (the For You feed shows bare icons): none here either. */
+    host.style.setProperty("--circle", colours.circle || "transparent");
     if (colours.fg) host.style.setProperty("--fg", colours.fg);
     if (colours.label) host.style.setProperty("--label", colours.label);
+    if (colours.font) host.style.setProperty("--font", colours.font);
+    if (!row && !story) {
+      for (const [name, value] of [["--size", colours.size], ["--icon", colours.icon], ["--pad", colours.pad], ["--label-gap", colours.labelGap]]) {
+        if (value) host.style.setProperty(name, value);
+      }
+    }
     if (story) host.style.setProperty("--fg", getComputedStyle(share).color);
     /* The space TikTok leaves between its own buttons: a margin under each, or the column's gap. */
     const shareGap = !row && !story && share.parentElement?.nextElementSibling ? getComputedStyle(share.parentElement).marginBottom : "";
