@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         TikTok Downloader
-// @version      0.2.12
+// @version      0.2.13
 // @description  Adds a download button to TikTok videos and photo posts that saves the best quality without a watermark.
 // @match        https://www.tiktok.com/*
 // @grant        none
@@ -45,10 +45,11 @@
 
   const AUTO_START = true;
   /* Set by build.js to the userscript's version. */
-  const VERSION = "0.2.12";
+  const VERSION = "0.2.13";
   const HOST_TAG = "tiktok-downloader";
   const LOG = "[TikTok Downloader]";
   const CODEC_SETTING = "tiktokDownloader.codec";
+  const DONE_SETTING = "tiktokDownloader.downloaded";
 
   /* ---------- General helpers ---------- */
 
@@ -240,6 +241,38 @@
     : "";
 
   const isPhotoPost = item => !!item?.imagePost?.images?.length;
+
+  /* ---------- What was downloaded ---------- */
+
+  /* Downloads are remembered in this browser, so their buttons keep a check mark: "v:<id>" a
+     video, "p:<id>:<n>" one photo of a post (counted from 0), "a:<id>" all of a post's photos,
+     "u:<username>" a profile picture. A story is remembered for a day (it is gone after that),
+     anything else for 30 days. */
+  const DAY = 24 * 60 * 60 * 1000;
+  const downloaded = (() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(DONE_SETTING) || "{}");
+      const now = Date.now();
+      return new Map(Object.entries(saved).filter(([, until]) => until > now));
+    } catch (error) {
+      return new Map();
+    }
+  })();
+  const isDownloaded = key => !!key && downloaded.get(key) > Date.now();
+  function markDownloaded(key) {
+    if (!key) return;
+    const id = key.split(":")[1];
+    const days = items.get(id)?.story ? 1 : 30;
+    downloaded.delete(key);
+    downloaded.set(key, Date.now() + days * DAY);
+    /* The newest 5000 are kept. */
+    while (downloaded.size > 5000) downloaded.delete(downloaded.keys().next().value);
+    try {
+      localStorage.setItem(DONE_SETTING, JSON.stringify(Object.fromEntries(downloaded)));
+    } catch (error) {
+      console.warn(LOG, "couldn't remember the download", error);
+    }
+  }
 
   /* ---------- Downloading ---------- */
 
@@ -629,6 +662,8 @@
     frame: ["M5 3.5h14A1.5 1.5 0 0 1 20.5 5v14a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V5A1.5 1.5 0 0 1 5 3.5z", "M9 7.5a1.75 1.75 0 1 1 0 3.5 1.75 1.75 0 0 1 0-3.5z", "m20.5 15.5-4.8-4.8a1.5 1.5 0 0 0-2.1 0L4 20.3"],
     busy: ["M12 3a9 9 0 1 0 9 9"],
     done: ["m5 12.5 4.5 4.5L19 7"],
+    /* A thick check mark, among the filled icons. */
+    doneSolid: { solid: ["M9.5 18.75a1.75 1.75 0 0 1-1.24-.51l-4.5-4.5a1.75 1.75 0 1 1 2.48-2.48l3.26 3.27 8.26-8.27a1.75 1.75 0 1 1 2.48 2.48l-9.5 9.5a1.75 1.75 0 0 1-1.24.51z"] },
     /* Filled versions, for the buttons among TikTok's own filled icons (like, comment,
        favourite, share). An arrow over a tray: */
     downloadSolid: { solid: [
@@ -805,6 +840,7 @@
       const count = item.imagePost.images.length;
       const index = shownPhotoIndex(item, scope());
       main.label.textContent = index >= 0 ? index + 1 + "/" + count : "Photo";
+      main.button.repaint?.();
     };
     const watch = item => {
       if (watching) return;
@@ -835,6 +871,8 @@
         all.unit.hidden = true;
       }
       main.button.setAttribute("aria-label", main.button.title);
+      main.button.repaint?.();
+      all.button.repaint?.();
     };
     host.refresh = () => {
       if (items.has(id)) describe(items.get(id));
@@ -847,22 +885,44 @@
     const after = () => {
       if (items.has(id)) describe(items.get(id));
     };
+    /* What the main button saves: the video, or the photo showing. */
+    const mainKey = () => {
+      const item = items.get(id);
+      if (!item) return null;
+      if (!isPhotoPost(item)) return "v:" + id;
+      const index = shownPhotoIndex(item, scope());
+      return index >= 0 ? "p:" + id + ":" + index : null;
+    };
     wireButton(main.button, mainIcon, async onProgress => {
       const item = await itemFor(id);
       return isPhotoPost(item) ? downloadShownPhoto(id, scope()) : downloadItem(id, onProgress);
-    }, after);
-    wireButton(all.button, allIcon, onProgress => downloadItem(id, onProgress), after);
+    }, after, mainKey);
+    wireButton(all.button, allIcon, onProgress => downloadItem(id, onProgress), after, () => "a:" + id);
+    main.button.repaint();
+    all.button.repaint();
     isolateEvents(host);
     return host;
   }
 
   /* Clicking a button runs its action. While a download runs: a spinner, then the percentage
      (when the action reports it), then a check mark; an error is shown. An action that returns
-     nothing (opening a tab) runs inside the click, so pop-up blockers allow it. */
-  function wireButton(button, iconName, action, after) {
+     nothing (opening a tab) runs inside the click, so pop-up blockers allow it. A button with a
+     key (doneKey, a function, since a photo post's key changes with the photo showing) keeps
+     the check mark once that has been downloaded, and still downloads it again when clicked.
+     button.repaint() shows the right icon and title for its key. */
+  function wireButton(button, iconName, action, after, doneKey) {
     const setIcon = name => button.replaceChildren(icon(name));
+    button.repaint = () => {
+      if (button.classList.contains("busy") || button.querySelector(".percent")) return;
+      const title = (button.title || "").replace(/ · Downloaded.*$/, "");
+      const done = isDownloaded(doneKey?.());
+      setIcon(done ? (Array.isArray(ICONS[iconName]) ? "done" : "doneSolid") : iconName);
+      button.title = done ? title + " · Downloaded, click to download again" : title;
+      button.setAttribute("aria-label", button.title);
+    };
     button.addEventListener("click", () => {
       if (button.classList.contains("busy")) return;
+      const key = doneKey?.();
       const onProgress = fraction => {
         const text = document.createElement("span");
         text.className = "percent";
@@ -883,14 +943,19 @@
       setIcon("busy");
       result.then(
         () => {
+          markDownloaded(key);
           button.classList.remove("busy");
-          setIcon("done");
+          setIcon(Array.isArray(ICONS[iconName]) ? "done" : "doneSolid");
           after?.();
-          setTimeout(() => setIcon(iconName), 1500);
+          setTimeout(() => {
+            button.replaceChildren();
+            button.repaint();
+          }, 1500);
         },
         error => {
           button.classList.remove("busy");
-          setIcon(iconName);
+          button.replaceChildren();
+          button.repaint();
           console.error(LOG, error);
           alert(error?.message || "Download failed.");
         });
@@ -901,16 +966,18 @@
   function wireDownload(button, id, describe) {
     wireButton(button, "download", onProgress => downloadItem(id, onProgress), () => {
       if (items.has(id)) describe(items.get(id));
-    });
+    }, () => (isPhotoPost(items.get(id)) ? "a:" : "v:") + id);
+    button.repaint();
   }
 
-  function makeSmallButton(iconName, label, action) {
+  function makeSmallButton(iconName, label, action, doneKey) {
     const button = document.createElement("button");
     button.type = "button";
     button.title = label;
     button.setAttribute("aria-label", label);
     button.append(icon(iconName));
-    wireButton(button, iconName, action);
+    wireButton(button, iconName, action, null, doneKey);
+    if (doneKey) button.repaint();
     return button;
   }
 
@@ -962,6 +1029,7 @@
         ? "Download " + item.imagePost.images.length + " photos at full size"
         : "Download video · " + qualityTitle(best);
       button.setAttribute("aria-label", button.title);
+      button.repaint?.();
     };
     button.title = "Download";
     button.setAttribute("aria-label", "Download");
@@ -988,7 +1056,7 @@
     open.append(makeSmallButton("open", "Open profile picture in a new tab", () => openProfilePicture(uniqueId, avatar)));
     const save = document.createElement("div");
     save.className = "pill bar avatar-right";
-    save.append(makeSmallButton("download", "Download profile picture", () => downloadProfilePicture(uniqueId, avatar)));
+    save.append(makeSmallButton("download", "Download profile picture", () => downloadProfilePicture(uniqueId, avatar), () => "u:" + uniqueId));
     root.append(style, open, save);
     host.refresh = () => {};
     isolateEvents(host);
