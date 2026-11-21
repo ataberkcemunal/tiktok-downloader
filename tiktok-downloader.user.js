@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         TikTok Downloader
-// @version      0.2.13
+// @version      0.2.14
 // @description  Adds a download button to TikTok videos and photo posts that saves the best quality without a watermark.
 // @match        https://www.tiktok.com/*
 // @grant        none
@@ -45,7 +45,7 @@
 
   const AUTO_START = true;
   /* Set by build.js to the userscript's version. */
-  const VERSION = "0.2.13";
+  const VERSION = "0.2.14";
   const HOST_TAG = "tiktok-downloader";
   const LOG = "[TikTok Downloader]";
   const CODEC_SETTING = "tiktokDownloader.codec";
@@ -247,31 +247,80 @@
   /* Downloads are remembered in this browser, so their buttons keep a check mark: "v:<id>" a
      video, "p:<id>:<n>" one photo of a post (counted from 0), "a:<id>" all of a post's photos,
      "u:<username>" a profile picture. A story is remembered for a day (it is gone after that),
-     anything else for 30 days. */
+     anything else for good. They are kept in IndexedDB (localStorage is small and shared with
+     TikTok's own data); like any site data, clearing TikTok's site data clears them too. Each
+     key maps to the time it is forgotten, or null for never. */
   const DAY = 24 * 60 * 60 * 1000;
-  const downloaded = (() => {
+  const STORE = "downloaded";
+  const downloaded = new Map();
+  const isDownloaded = key => {
+    if (!key || !downloaded.has(key)) return false;
+    const until = downloaded.get(key);
+    return until === null || until > Date.now();
+  };
+
+  /* Buttons that show a check mark, painted again once the saved downloads have been read. */
+  const paintable = new Set();
+  const repaintAll = () => {
+    for (const button of paintable) {
+      if (button.isConnected === false && button.painted) paintable.delete(button);
+      else button.repaint?.();
+    }
+  };
+
+  const request = r => new Promise((resolve, reject) => {
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+
+  /* Opens the database, reads every saved download into the map (dropping those whose time is
+     up), and moves over the ones the first versions kept in localStorage: a story's (due within
+     a day) keeps its time, any other is kept for good. */
+  const database = (async () => {
     try {
-      const saved = JSON.parse(localStorage.getItem(DONE_SETTING) || "{}");
+      const open = indexedDB.open("tiktokDownloader", 1);
+      open.onupgradeneeded = () => open.result.createObjectStore(STORE);
+      const db = await request(open);
       const now = Date.now();
-      return new Map(Object.entries(saved).filter(([, until]) => until > now));
+      const store = db.transaction(STORE, "readwrite").objectStore(STORE);
+      const keys = await request(store.getAllKeys());
+      const values = await request(store.getAll());
+      keys.forEach((key, index) => {
+        const until = values[index];
+        if (until !== null && until <= now) store.delete(key);
+        else downloaded.set(key, until);
+      });
+      try {
+        const old = JSON.parse(localStorage.getItem(DONE_SETTING) || "null");
+        if (old) {
+          for (const [key, until] of Object.entries(old)) {
+            if (until <= now || downloaded.has(key)) continue;
+            const kept = until <= now + DAY ? until : null;
+            downloaded.set(key, kept);
+            store.put(kept, key);
+          }
+          localStorage.removeItem(DONE_SETTING);
+        }
+      } catch (error) {
+        console.warn(LOG, "couldn't move the old downloads", error);
+      }
+      return db;
     } catch (error) {
-      return new Map();
+      console.warn(LOG, "couldn't open the list of downloads", error);
+      return null;
+    } finally {
+      repaintAll();
     }
   })();
-  const isDownloaded = key => !!key && downloaded.get(key) > Date.now();
+
   function markDownloaded(key) {
     if (!key) return;
     const id = key.split(":")[1];
-    const days = items.get(id)?.story ? 1 : 30;
-    downloaded.delete(key);
-    downloaded.set(key, Date.now() + days * DAY);
-    /* The newest 5000 are kept. */
-    while (downloaded.size > 5000) downloaded.delete(downloaded.keys().next().value);
-    try {
-      localStorage.setItem(DONE_SETTING, JSON.stringify(Object.fromEntries(downloaded)));
-    } catch (error) {
-      console.warn(LOG, "couldn't remember the download", error);
-    }
+    const until = items.get(id)?.story ? Date.now() + DAY : null;
+    downloaded.set(key, until);
+    database.then(db => {
+      if (db) db.transaction(STORE, "readwrite").objectStore(STORE).put(until, key);
+    }).catch(error => console.warn(LOG, "couldn't remember the download", error));
   }
 
   /* ---------- Downloading ---------- */
@@ -912,7 +961,9 @@
      button.repaint() shows the right icon and title for its key. */
   function wireButton(button, iconName, action, after, doneKey) {
     const setIcon = name => button.replaceChildren(icon(name));
+    if (doneKey) paintable.add(button);
     button.repaint = () => {
+      button.painted = true;
       if (button.classList.contains("busy") || button.querySelector(".percent")) return;
       const title = (button.title || "").replace(/ · Downloaded.*$/, "");
       const done = isDownloaded(doneKey?.());
