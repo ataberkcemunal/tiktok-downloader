@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         TikTok Downloader
-// @version      0.2.11
+// @version      0.2.12
 // @description  Adds a download button to TikTok videos and photo posts that saves the best quality without a watermark.
 // @match        https://www.tiktok.com/*
 // @grant        none
@@ -45,7 +45,7 @@
 
   const AUTO_START = true;
   /* Set by build.js to the userscript's version. */
-  const VERSION = "0.2.11";
+  const VERSION = "0.2.12";
   const HOST_TAG = "tiktok-downloader";
   const LOG = "[TikTok Downloader]";
   const CODEC_SETTING = "tiktokDownloader.codec";
@@ -77,10 +77,21 @@
 
   /* Keeps every video found in a response, however deep it is (itemList, itemInfo.itemStruct,
      data[].item …). A newer copy replaces an older one: its addresses are fresher. */
+  /* TikTok's own copy of a post in the page (its React state) names the author by username
+     only, with the display name beside it; made to look like the API's, where the author is an
+     object. */
+  function normalizeItem(item) {
+    if (typeof item.author !== "string") return item;
+    return {
+      ...item,
+      author: { uniqueId: item.author, nickname: item.nickname || "", id: item.authorId, secUid: item.authorSecId },
+    };
+  }
+
   function collectItems(value, depth = 0) {
     if (!value || typeof value !== "object" || depth > 7) return;
     if (isItem(value)) {
-      items.set(value.id, value);
+      items.set(value.id, normalizeItem(value));
       return;
     }
     for (const key in value) collectItems(value[key], depth + 1);
@@ -131,26 +142,62 @@
     if (script) collectText(script.textContent);
   }
 
-  /* A video's details: kept ones, then TikTok's item detail API, then the video's own page.
-     fresh skips the kept copy (its addresses may have expired). */
+  /* A post's details from the page itself: TikTok's buttons and entries keep the post they
+     show in their React props (the Share button's, a few levels up, as "item"). Only a full copy
+     counts: one with every version of the video, or the photos. Nothing is downloaded, so this
+     works even when TikTok answers requests with a check page instead. */
+  const ITEM_HOLDERS = '[data-e2e="share-icon"], [data-e2e="browse-favorite-icon"], [data-e2e="share-btn"], ' +
+    '[data-more-menu-item-id], article, [data-e2e="user-post-item"]';
+  function itemFromPage(id) {
+    for (const element of document.querySelectorAll(ITEM_HOLDERS)) {
+      const key = Object.keys(element).find(name => name.startsWith("__reactFiber$"));
+      let fiber = key && element[key];
+      for (let depth = 0; fiber && depth < 40; depth++, fiber = fiber.return) {
+        const props = fiber.memoizedProps;
+        if (!props || typeof props !== "object") continue;
+        for (const name in props) {
+          const value = props[name];
+          if (isItem(value) && value.id === id && (value.video?.bitrateInfo?.length || value.imagePost?.images?.length)) {
+            return normalizeItem(value);
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /* A post's details: kept ones, the page's own copy, TikTok's item detail API, then the post's
+     own page. fresh (the addresses may have expired) asks TikTok first and uses the page's copy
+     only if that fails. */
   async function itemFor(id, { fresh = false } = {}) {
     if (!fresh && items.has(id)) return items.get(id);
+    const fromPage = () => {
+      const item = itemFromPage(id);
+      if (item) items.set(id, item);
+      return item;
+    };
+    if (!fresh && fromPage()) return items.get(id);
     try {
       const response = await window.fetch("/api/item/detail/?aid=1988&itemId=" + id, { credentials: "include" });
       const data = await response.json();
       const item = data?.itemInfo?.itemStruct;
       if (isItem(item) && item.id === id) {
-        items.set(id, item);
-        return item;
+        items.set(id, normalizeItem(item));
+        return items.get(id);
       }
     } catch (error) {
       console.warn(LOG, "item detail failed", error);
     }
-    const response = await shared.nativeFetch("/@i/video/" + id, { credentials: "include" });
-    const html = await response.text();
-    const doc = new DOMParser().parseFromString(html, "text/html");
-    collectPageData(doc);
-    if (items.has(id)) return items.get(id);
+    const kept = items.get(id);
+    try {
+      const response = await shared.nativeFetch("/@i/video/" + id, { credentials: "include" });
+      collectPageData(new DOMParser().parseFromString(await response.text(), "text/html"));
+    } catch (error) {
+      console.warn(LOG, "post page failed", error);
+    }
+    /* A new copy from the post's page; otherwise the page's own copy, or a kept one. */
+    if (items.get(id) && items.get(id) !== kept) return items.get(id);
+    if (fromPage() || items.has(id)) return items.get(id);
     throw new Error("Couldn't find this video's details. Reload the page and try again.");
   }
 
