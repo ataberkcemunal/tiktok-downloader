@@ -469,6 +469,17 @@
     frame: ["M5 3.5h14A1.5 1.5 0 0 1 20.5 5v14a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V5A1.5 1.5 0 0 1 5 3.5z", "M9 7.5a1.75 1.75 0 1 1 0 3.5 1.75 1.75 0 0 1 0-3.5z", "m20.5 15.5-4.8-4.8a1.5 1.5 0 0 0-2.1 0L4 20.3"],
     busy: ["M12 3a9 9 0 1 0 9 9"],
     done: ["m5 12.5 4.5 4.5L19 7"],
+    /* Filled versions, for the buttons among TikTok's own filled icons (like, comment,
+       favourite, share). An arrow over a tray: */
+    downloadSolid: { fill: [
+      "M12 2a1.75 1.75 0 0 1 1.75 1.75v7.6l2.51-2.5a1.75 1.75 0 1 1 2.48 2.47l-5.5 5.5a1.75 1.75 0 0 1-2.48 0l-5.5-5.5a1.75 1.75 0 1 1 2.48-2.47l2.51 2.5v-7.6A1.75 1.75 0 0 1 12 2z",
+      "M3.75 15a1.75 1.75 0 0 1 1.75 1.75v1.25c0 .28.22.5.5.5h12a.5.5 0 0 0 .5-.5v-1.25a1.75 1.75 0 1 1 3.5 0V18a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4v-1.25A1.75 1.75 0 0 1 3.75 15z",
+    ] },
+    /* A photo in front of another, with a mountain and a sun cut out of it: */
+    stackSolid: { fill: [
+      "M5 2.5h10.5a1.5 1.5 0 0 1 0 3h-10v10a1.5 1.5 0 0 1-3 0V5A2.5 2.5 0 0 1 5 2.5z",
+      "M9.5 7.5h10A2.5 2.5 0 0 1 22 10v9a2.5 2.5 0 0 1-2.5 2.5h-10A2.5 2.5 0 0 1 7 19v-9a2.5 2.5 0 0 1 2.5-2.5zM12 10a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM10 19h9.5l-3.2-4.2-2.1 2.6-1.4-1.6z",
+    ] },
   };
 
   /* The frosted pill that holds small buttons: the extra buttons beside the main one, and the
@@ -491,9 +502,12 @@
     const svg = document.createElementNS(namespace, "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
     svg.setAttribute("aria-hidden", "true");
-    for (const data of ICONS[name]) {
+    const shape = ICONS[name];
+    if (shape.fill) svg.classList.add("solid");
+    for (const data of shape.fill || shape) {
       const path = document.createElementNS(namespace, "path");
       path.setAttribute("d", data);
+      if (shape.fill) path.setAttribute("fill-rule", "evenodd");
       svg.append(path);
     }
     return svg;
@@ -515,6 +529,7 @@
     "button:active{transform:scale(.9)}",
     "button:focus-visible{outline:2px solid currentColor;outline-offset:2px}",
     "svg{width:var(--icon,24px);height:var(--icon,24px);fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}",
+    "svg.solid{fill:currentColor;stroke:none}",
     "button.busy svg{animation:spin .8s linear infinite}",
     "@keyframes spin{to{transform:rotate(360deg)}}",
     ".percent{font:700 12px/1 var(--font,-apple-system,sans-serif)}",
@@ -609,9 +624,12 @@
       unit.append(button, label);
       return { unit, button, label };
     };
-    const main = makeUnit("download");
+    /* Filled icons, like TikTok's own, except under a story, whose icons are outlines. */
+    const mainIcon = story ? "download" : "downloadSolid";
+    const allIcon = story ? "stack" : "stackSolid";
+    const main = makeUnit(mainIcon);
     main.label.textContent = "Save";
-    const all = makeUnit("stack");
+    const all = makeUnit(allIcon);
     all.unit.hidden = true;
     root.append(style, main.unit, all.unit);
 
@@ -664,11 +682,11 @@
     const after = () => {
       if (items.has(id)) describe(items.get(id));
     };
-    wireButton(main.button, "download", async onProgress => {
+    wireButton(main.button, mainIcon, async onProgress => {
       const item = await itemFor(id);
       return isPhotoPost(item) ? downloadShownPhoto(id, scope()) : downloadItem(id, onProgress);
     }, after);
-    wireButton(all.button, "stack", onProgress => downloadItem(id, onProgress), after);
+    wireButton(all.button, allIcon, onProgress => downloadItem(id, onProgress), after);
     isolateEvents(host);
     return host;
   }
