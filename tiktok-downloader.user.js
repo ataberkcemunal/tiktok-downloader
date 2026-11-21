@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         TikTok Downloader
-// @version      0.2.16
+// @version      0.2.17
 // @description  Adds a download button to TikTok videos and photo posts that saves the best quality without a watermark.
 // @match        https://www.tiktok.com/*
 // @grant        GM_getValue
@@ -49,7 +49,7 @@
 
   const AUTO_START = true;
   /* Set by build.js to the userscript's version. */
-  const VERSION = "0.2.16";
+  const VERSION = "0.2.17";
   const HOST_TAG = "tiktok-downloader";
   const LOG = "[TikTok Downloader]";
   const CODEC_SETTING = "tiktokDownloader.codec";
@@ -1033,8 +1033,11 @@
       setIcon("busy");
       result.then(
         () => {
+          /* Remembered, then painted at once, so the check mark already shows in pink. */
           markDownloaded(key);
           button.classList.remove("busy");
+          button.replaceChildren();
+          button.repaint();
           setIcon(Array.isArray(ICONS[iconName]) ? "done" : "doneSolid");
           after?.();
           setTimeout(() => {
