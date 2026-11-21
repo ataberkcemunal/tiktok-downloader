@@ -18,11 +18,8 @@
  * viewer opened from a grid, and on a small bar over every thumbnail (profile, search,
  * explore, the videos beside a video) that shows while the pointer is over it.
  *
- * Pointing at the main button opens a few more beside it: the cover (the largest of TikTok's
- * cover images, measured, since a "cover" is often bigger than the video), the first frame
- * (a PNG taken from the best video) and the sound; for a photo post, the photo that is
- * showing and the sound. Thumbnails also have a cover button, and a profile's picture gets a
- * button that saves it at its largest.
+ * For a photo post, the main button saves the photo that is showing, and pointing at it opens
+ * one more above it that saves every photo (thumbnails save every photo). A profile's picture gets a button that saves it at its largest.
  *
  * Quality: every video comes in several versions (video.bitrateInfo). TikTok's player and its
  * own Download button use a 540p H.264 one (the Download file also has a watermark and a
@@ -59,7 +56,7 @@
     (text || "").replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ").replace(/#\S+/g, "").replace(/\s+/g, " ").trim().slice(0, max).trim();
 
   const extensionOf = type =>
-    ({ "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/heic": "heic", "audio/mp4": "m4a", "audio/mpeg": "mp3", "video/mp4": "mp4" })[type] || "";
+    ({ "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/heic": "heic", "video/mp4": "mp4" })[type] || "";
 
   /* The browser's own fetch, taken before TikTok wraps it. Files from TikTok's servers are fetched
      with it; TikTok's API is called through window.fetch, which TikTok signs. */
@@ -197,7 +194,7 @@
   /* ---------- Downloading ---------- */
 
   /* Downloads a file, reporting progress (0–1) when its size is known, and checks what came back:
-     the right status, a video that starts as an MP4 file, an image or audio of the right type,
+     the right status, a video that starts as an MP4 file, an image of the right type,
      and the expected size. Anything else throws, so the next address can be tried. */
   async function fetchChecked(url, { kind, size = 0, onProgress } = {}) {
     /* Asked for as a range from the start, as TikTok's player does (the answer is the whole file,
@@ -222,9 +219,7 @@
     const range = response.headers.get("content-range");
     if (response.status === 206 && range && !/^bytes 0-/.test(range)) throw new Error("Unexpected range " + range);
     const type = (response.headers.get("content-type") || "").split(";")[0].trim();
-    /* TikTok serves sounds as video/mp4, though they hold only audio. */
-    const typeOk = type.startsWith(kind + "/") || kind === "audio" && type === "video/mp4";
-    if (kind !== "video" && !typeOk) throw new Error("Unexpected file type " + type);
+    if (kind !== "video" && !type.startsWith(kind + "/")) throw new Error("Unexpected file type " + type);
     const total = size || Number(response.headers.get("content-length")) || 0;
     const chunks = [];
     let received = 0;
@@ -236,7 +231,7 @@
       received += value.length;
       if (total && onProgress) onProgress(Math.min(received / total, 1));
     }
-    const blob = new Blob(chunks, { type: kind === "video" ? "video/mp4" : kind === "audio" && type === "video/mp4" ? "audio/mp4" : type });
+    const blob = new Blob(chunks, { type: kind === "video" ? "video/mp4" : type });
     if (kind === "video") {
       const head = new Uint8Array(await blob.slice(0, 8).arrayBuffer());
       if (String.fromCharCode(...head.slice(4, 8)) !== "ftyp") throw new Error("Not an MP4 file");
@@ -336,30 +331,20 @@
     }
   }
 
-  /* The last video downloaded, so its first frame can be taken without downloading it again. */
-  let lastVideo = null;
-  async function bestVideoOf(item, onProgress) {
-    if (lastVideo?.id === item.id) return lastVideo;
-    const result = await downloadBestVideo(item, onProgress);
-    lastVideo = { id: item.id, ...result };
-    return lastVideo;
-  }
-
   async function downloadItem(id, onProgress) {
     const item = await itemFor(id);
     if (isPhotoPost(item)) return downloadPhotos(item, onProgress);
-    const { blob, variant, best } = await bestVideoOf(item, onProgress);
+    const { blob, variant, best } = await downloadBestVideo(item, onProgress);
     saveBlob(blob, fileBase(item) + ".mp4");
     if (best && variant.width * variant.height < best.width * best.height) {
       toast("Saved " + qualityLabel(variant) + ": the " + qualityLabel(best) + " version couldn't be downloaded.");
     }
   }
 
-  /* ---------- Cover, first frame, sound, one photo, profile picture ---------- */
+  /* ---------- One photo, profile picture ---------- */
 
   /* The largest of several images: each candidate (an address or a list of addresses for the
-     same image) is downloaded and measured, since TikTok's names don't say which is largest
-     (a video's "cover" is often bigger than its "originCover", and bigger than the video). */
+     same image) is downloaded and measured, since the addresses don't say how big they are. */
   async function largestImage(candidates) {
     let best = null;
     for (const candidate of candidates) {
@@ -378,75 +363,6 @@
     }
     if (!best) throw new Error("Couldn't download the image.");
     return best.blob;
-  }
-
-  async function downloadCover(id) {
-    const item = await itemFor(id);
-    const video = item.video || {};
-    const candidates = [...new Set([video.cover, video.originCover, video.dynamicCover].filter(Boolean))];
-    if (!candidates.length) throw new Error("This video has no cover.");
-    const blob = await largestImage(candidates);
-    saveBlob(blob, fileBase(item) + " - cover." + (extensionOf(blob.type) || "jpg"));
-  }
-
-  /* The first frame of a downloaded video, as a PNG the size of the video. A frame that comes
-     out empty (transparent) counts as failed. */
-  function firstFrameOf(blob) {
-    return new Promise((resolve, reject) => {
-      const video = document.createElement("video");
-      const url = URL.createObjectURL(blob);
-      let drawn = false;
-      const finish = (error, result) => {
-        clearTimeout(timer);
-        URL.revokeObjectURL(url);
-        video.removeAttribute("src");
-        video.load();
-        if (error) reject(error);
-        else resolve(result);
-      };
-      const timer = setTimeout(() => finish(new Error("The video couldn't be read.")), 15000);
-      const draw = () => {
-        if (drawn) return;
-        drawn = true;
-        try {
-          const canvas = document.createElement("canvas");
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          const context = canvas.getContext("2d");
-          context.drawImage(video, 0, 0);
-          if (!context.getImageData(canvas.width >> 1, canvas.height >> 1, 1, 1).data[3]) throw new Error("The frame came out empty.");
-          canvas.toBlob(image => finish(image ? null : new Error("Couldn't create the image."), image), "image/png");
-        } catch (error) {
-          finish(error);
-        }
-      };
-      video.muted = true;
-      video.playsInline = true;
-      video.preload = "auto";
-      video.addEventListener("error", () => finish(new Error("This browser can't play the video, so its first frame can't be taken.")));
-      /* Seeking to 0 makes the browser prepare the first frame; it is drawn once ready, or after
-         300 ms at the latest. */
-      video.addEventListener("loadeddata", () => {
-        video.addEventListener("seeked", draw, { once: true });
-        video.currentTime = 0;
-        setTimeout(draw, 300);
-      }, { once: true });
-      video.src = url;
-    });
-  }
-
-  async function downloadFirstFrame(id, onProgress) {
-    const item = await itemFor(id);
-    const { blob } = await bestVideoOf(item, onProgress);
-    saveBlob(await firstFrameOf(blob), fileBase(item) + " - first frame.png");
-  }
-
-  async function downloadSound(id, onProgress) {
-    const item = await itemFor(id);
-    const url = item.music?.playUrl;
-    if (!url) throw new Error("This post's sound isn't available.");
-    const blob = await fetchChecked(url, { kind: "audio", onProgress });
-    saveBlob(blob, fileBase(item) + " - sound." + (extensionOf(blob.type) || "m4a"));
   }
 
   /* The photo of a photo post that is showing: the largest visible picture on screen whose
@@ -495,51 +411,61 @@
     saveBlob(blob, fileBase(item) + " - " + String(index + 1).padStart(width, "0") + "." + (extensionOf(blob.type) || "jpg"));
   }
 
-  /* A profile's picture at its largest (avatarLarger, 1080 at most): from a video of theirs that
-     is already known, the page's own data and the picture shown on the page (which TikTok asks
-     for at 1080 too), the largest of them; their profile page only if none of these works. */
-  async function downloadProfilePicture(uniqueId, avatar) {
-    const candidates = [];
+  /* The addresses of a profile's picture (avatarLarger, 1080 at most): from a video of theirs
+     that is already known, the page's own data, and the picture shown on the page (which TikTok
+     asks for at 1080 too). */
+  function profilePictureUrls(uniqueId, avatar, doc = document) {
+    const urls = [];
     for (const item of items.values()) {
       if (item.author?.uniqueId === uniqueId && item.author.avatarLarger) {
-        candidates.push(item.author.avatarLarger);
+        urls.push(item.author.avatarLarger);
         break;
       }
     }
-    const fromPage = doc => {
-      try {
-        const data = JSON.parse(doc.getElementById("__UNIVERSAL_DATA_FOR_REHYDRATION__")?.textContent || "{}");
-        const user = data.__DEFAULT_SCOPE__?.["webapp.user-detail"]?.userInfo?.user;
-        return user?.uniqueId === uniqueId ? user.avatarLarger : null;
-      } catch (error) {
-        return null;
-      }
-    };
-    candidates.push(fromPage(document));
+    try {
+      const data = JSON.parse(doc.getElementById("__UNIVERSAL_DATA_FOR_REHYDRATION__")?.textContent || "{}");
+      const user = data.__DEFAULT_SCOPE__?.["webapp.user-detail"]?.userInfo?.user;
+      if (user?.uniqueId === uniqueId) urls.push(user.avatarLarger);
+    } catch (ignored) {}
     const shown = avatar?.querySelector("img");
-    candidates.push(shown && (shown.currentSrc || shown.src));
+    if (shown) urls.push(shown.currentSrc || shown.src);
+    return [...new Set(urls.filter(url => /^https?:/.test(url || "")))];
+  }
+
+  /* Saves the largest of them; the profile page is fetched only if none of them works (TikTok
+     sometimes answers that with a check page instead). */
+  async function downloadProfilePicture(uniqueId, avatar) {
     let blob = null;
     try {
-      blob = await largestImage([...new Set(candidates.filter(url => /^https?:/.test(url || "")))]);
+      blob = await largestImage(profilePictureUrls(uniqueId, avatar));
     } catch (error) {
       const response = await shared.nativeFetch("/@" + encodeURIComponent(uniqueId), { credentials: "include" });
-      const url = fromPage(new DOMParser().parseFromString(await response.text(), "text/html"));
+      const doc = new DOMParser().parseFromString(await response.text(), "text/html");
+      const url = profilePictureUrls(uniqueId, null, doc)[0];
       if (!url) throw new Error("Couldn't find this profile's picture.");
       blob = await fetchChecked(url, { kind: "image" });
     }
     saveBlob(blob, "@" + uniqueId + " - profile picture." + (extensionOf(blob.type) || "jpg"));
   }
 
+  /* Opens the profile's picture in a new tab, at once (inside the click, so pop-up blockers
+     allow it). */
+  function openProfilePicture(uniqueId, avatar) {
+    const url = profilePictureUrls(uniqueId, avatar)[0];
+    if (!url) throw new Error("Couldn't find this profile's picture.");
+    window.open(url, "_blank", "noopener");
+  }
+
   /* ---------- Buttons ---------- */
 
   const ICONS = {
     download: ["M12 3.5v11", "m7.5 10.5 4.5 4.5 4.5-4.5", "M4 16.5v2A2.5 2.5 0 0 0 6.5 21h11a2.5 2.5 0 0 0 2.5-2.5v-2"],
-    /* A play triangle in a frame: the cover. */
-    cover: ["M5 3.5h14A1.5 1.5 0 0 1 20.5 5v14a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V5A1.5 1.5 0 0 1 5 3.5z", "M10 8.6v6.8l5.4-3.4z"],
-    /* A picture: the first frame, or the photo that is showing. */
+    /* An arrow out of a box: open in a new tab. */
+    open: ["M11 4.5H6.5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V13", "M14.5 3.5h6v6", "m20.5 3.5-9 9"],
+    /* Two photos, one behind the other: every photo of a post. */
+    stack: ["M8.5 7.5h10a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-10a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z", "M3.5 15.5v-10a2 2 0 0 1 2-2h10", "m6.5 17.5 3.8-3.8a1.5 1.5 0 0 1 2.1 0l4 4"],
+    /* A picture: the photo that is showing. */
     frame: ["M5 3.5h14A1.5 1.5 0 0 1 20.5 5v14a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V5A1.5 1.5 0 0 1 5 3.5z", "M9 7.5a1.75 1.75 0 1 1 0 3.5 1.75 1.75 0 0 1 0-3.5z", "m20.5 15.5-4.8-4.8a1.5 1.5 0 0 0-2.1 0L4 20.3"],
-    /* Two notes: the sound. */
-    sound: ["M9 18V5.5l11-2V16", "M9 18a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z", "M20 16a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"],
     busy: ["M12 3a9 9 0 1 0 9 9"],
     done: ["m5 12.5 4.5 4.5L19 7"],
   };
@@ -591,16 +517,14 @@
     ":host([data-row]){flex-direction:row;gap:6px;margin:0}",
     ":host([data-row]) button{width:32px;height:32px}",
     ":host([data-row]) svg{width:18px;height:18px}",
-    /* The extra buttons open beside the main one while the pointer is over it: to its left in
-       the column, above it in a row. An invisible strip bridges the gap so they stay open on
-       the way over. */
+    /* The extra button opens above the main one while the pointer is over it. An invisible strip
+       bridges the gap so it stays open on the way over. */
     ":host{position:relative}",
-    ".more{position:absolute;right:calc(100% + 8px);top:24px;transform:translateY(-50%);opacity:0;pointer-events:none;transition:opacity .15s}",
+    ".more{position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);z-index:1;opacity:0;pointer-events:none;transition:opacity .15s}",
     ".more:empty{display:none}",
-    ".more::after{content:'';position:absolute;left:100%;top:0;bottom:0;width:10px}",
+    ".more::after{content:'';position:absolute;left:0;right:0;top:100%;height:10px}",
     ":host(:hover) .more,.more:focus-within{opacity:1;pointer-events:auto}",
-    ":host([data-row]) .more{right:auto;left:0;top:auto;bottom:calc(100% + 8px);transform:none}",
-    ":host([data-row]) .more::after{left:0;right:0;top:100%;bottom:auto;width:auto;height:10px}",
+    ":host([data-row]) .more{left:0;transform:none}",
   ].join("") + PILL_CSS;
 
   /* The circle element and the label of TikTok's Share button, to copy colours from: the first
@@ -647,30 +571,25 @@
     more.className = "pill more";
     root.append(style, button, label, more);
 
-    /* The extra buttons, once it is known whether this is a video or a photo post. */
+    /* For a photo post the main button saves the photo that is showing, and pointing at it
+       shows one more above it that saves them all; a video has no extra button. */
     let extrasFor = "";
     const setExtras = item => {
-      const kind = isPhotoPost(item) ? "photo" : "video";
+      const count = isPhotoPost(item) ? item.imagePost.images.length : 0;
+      const kind = count > 1 ? "photos" : "single";
       if (extrasFor === kind) return;
       extrasFor = kind;
-      more.replaceChildren(...(kind === "photo"
-        ? [
-          makeSmallButton("frame", "Download the photo that is showing", () => downloadShownPhoto(id, scope())),
-          makeSmallButton("sound", "Download sound", onProgress => downloadSound(id, onProgress)),
-        ]
-        : [
-          makeSmallButton("cover", "Download cover", () => downloadCover(id)),
-          makeSmallButton("frame", "Download first frame", onProgress => downloadFirstFrame(id, onProgress)),
-          makeSmallButton("sound", "Download sound", onProgress => downloadSound(id, onProgress)),
-        ]));
+      more.replaceChildren(...(kind === "photos"
+        ? [makeSmallButton("stack", "Download all " + count + " photos", onProgress => downloadItem(id, onProgress))]
+        : []));
     };
 
     const describe = item => {
       setExtras(item);
       if (isPhotoPost(item)) {
         const count = item.imagePost.images.length;
-        label.textContent = count + (count === 1 ? " photo" : " photos");
-        button.title = "Download " + label.textContent + " at full size";
+        label.textContent = "Photo";
+        button.title = "Download the photo that is showing · " + count + (count === 1 ? " photo" : " photos") + " in this post";
       } else {
         const best = rankVariants(item)[0];
         label.textContent = qualityLabel(best) || "Save";
@@ -686,19 +605,23 @@
       if (!items.has(id)) itemFor(id).then(describe).catch(() => {});
     });
 
-    wireDownload(button, id, describe);
+    wireButton(button, "download", async onProgress => {
+      const item = await itemFor(id);
+      return isPhotoPost(item) ? downloadShownPhoto(id, scope()) : downloadItem(id, onProgress);
+    }, () => {
+      if (items.has(id)) describe(items.get(id));
+    });
     isolateEvents(host);
     return host;
   }
 
-  /* Clicking a button runs its action: a spinner, then the percentage (when the action reports
-     it), then a check mark; an error is shown. */
+  /* Clicking a button runs its action. While a download runs: a spinner, then the percentage
+     (when the action reports it), then a check mark; an error is shown. An action that returns
+     nothing (opening a tab) runs inside the click, so pop-up blockers allow it. */
   function wireButton(button, iconName, action, after) {
     const setIcon = name => button.replaceChildren(icon(name));
     button.addEventListener("click", () => {
       if (button.classList.contains("busy")) return;
-      button.classList.add("busy");
-      setIcon("busy");
       const onProgress = fraction => {
         const text = document.createElement("span");
         text.className = "percent";
@@ -708,10 +631,15 @@
       };
       let result;
       try {
-        result = Promise.resolve(action(onProgress));
+        result = action(onProgress);
       } catch (error) {
-        result = Promise.reject(error);
+        console.error(LOG, error);
+        alert(error?.message || "Something went wrong.");
+        return;
       }
+      if (!(result instanceof Promise)) return;
+      button.classList.add("busy");
+      setIcon("busy");
       result.then(
         () => {
           button.classList.remove("busy");
@@ -782,7 +710,7 @@
     const button = document.createElement("button");
     button.type = "button";
     button.append(icon("download"));
-    bar.append(button, makeSmallButton("cover", "Download cover", () => downloadCover(id)));
+    bar.append(button);
     root.append(style, bar);
     const describe = item => {
       const best = isPhotoPost(item) ? null : rankVariants(item)[0];
@@ -813,7 +741,9 @@
     style.textContent = TILE_CSS;
     const bar = document.createElement("div");
     bar.className = "pill bar";
-    bar.append(makeSmallButton("download", "Download profile picture", () => downloadProfilePicture(uniqueId, avatar)));
+    bar.append(
+      makeSmallButton("open", "Open profile picture in a new tab", () => openProfilePicture(uniqueId, avatar)),
+      makeSmallButton("download", "Download profile picture", () => downloadProfilePicture(uniqueId, avatar)));
     root.append(style, bar);
     host.refresh = () => {};
     isolateEvents(host);
@@ -891,10 +821,16 @@
 
     const scan = () => {
       for (const share of document.querySelectorAll('[data-e2e="share-icon"]')) {
-        const entry = share.closest(ENTRY) || entryOnScreen();
+        /* Inside an entry the id comes from the entry. The row beside the For You feed belongs
+           to the entry on screen; its own "more" menu names that post, which also works for
+           photo posts (they have no player to read the id from). */
+        const inside = share.closest(ENTRY);
+        const chrome = inside ? null : share.closest('[data-e2e="anchoring-chrome-host"]');
+        const fromMenu = chrome?.querySelector("[data-more-menu-item-id]")?.dataset.moreMenuItemId;
+        const entry = inside || entryOnScreen();
         const column = share.parentElement?.parentElement;
-        if (!entry || !column) continue;
-        const id = idOfEntry(entry);
+        if (!column || !entry && !fromMenu) continue;
+        const id = /^\d{8,}$/.test(fromMenu || "") ? fromMenu : idOfEntry(entry);
         const existing = column.querySelector(":scope > " + HOST_TAG);
         if (existing && existing.dataset.id === id) continue;
         existing?.remove();
@@ -965,7 +901,7 @@
       });
     };
     const observer = new MutationObserver(queueScan);
-    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["id", "href"] });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["id", "href", "data-more-menu-item-id"] });
     /* Scrolling the feed changes which entry the buttons beside it belong to. */
     document.addEventListener("scroll", queueScan, { capture: true, passive: true });
     queueScan();
