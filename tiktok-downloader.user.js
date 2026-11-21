@@ -524,7 +524,7 @@
     ".more{position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);z-index:1;opacity:0;pointer-events:none;transition:opacity .15s}",
     ".more:empty{display:none}",
     ".more::after{content:'';position:absolute;left:0;right:0;top:100%;height:10px}",
-    ":host(:hover) .more,.more:focus-within{opacity:1;pointer-events:auto}",
+    ":host(:hover) .more,.more:has(:focus-visible){opacity:1;pointer-events:auto}",
     ":host([data-row]) .more{left:0;transform:none}",
     /* Under a story, among its round buttons: no background and no label. */
     ":host([data-story]){margin:0}",
@@ -696,9 +696,12 @@
   const TILE_CSS = PILL_CSS + [
     ":host{all:initial;position:absolute;inset:0;pointer-events:none;z-index:2}",
     ".bar{position:absolute;left:8px;top:8px;opacity:0;pointer-events:none;transition:opacity .15s}",
-    ":host([data-hover]) .bar,.bar:focus-within{opacity:1;pointer-events:auto}",
-    /* Over the round profile picture, the bar sits at the bottom in the middle. */
-    ":host([data-avatar]) .bar{left:50%;top:auto;bottom:8px;transform:translateX(-50%)}",
+    /* A button keeps focus after a click, so only keyboard focus keeps a bar showing. */
+    ":host([data-hover]) .bar,.bar:has(:focus-visible){opacity:1;pointer-events:auto}",
+    /* Over the profile picture, as in Instagram Downloader: open at the bottom left, download at
+       the bottom right. */
+    ".bar.avatar-left{left:0;top:auto;bottom:0}",
+    ".bar.avatar-right{left:auto;right:0;top:auto;bottom:0}",
     "button.busy svg{animation:spin .8s linear infinite}",
     "@keyframes spin{to{transform:rotate(360deg)}}",
   ].join("");
@@ -746,16 +749,18 @@
     const root = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
     style.textContent = TILE_CSS;
-    const bar = document.createElement("div");
-    bar.className = "pill bar";
-    bar.append(
-      makeSmallButton("open", "Open profile picture in a new tab", () => openProfilePicture(uniqueId, avatar)),
-      makeSmallButton("download", "Download profile picture", () => downloadProfilePicture(uniqueId, avatar)));
-    root.append(style, bar);
+    const open = document.createElement("div");
+    open.className = "pill bar avatar-left";
+    open.append(makeSmallButton("open", "Open profile picture in a new tab", () => openProfilePicture(uniqueId, avatar)));
+    const save = document.createElement("div");
+    save.className = "pill bar avatar-right";
+    save.append(makeSmallButton("download", "Download profile picture", () => downloadProfilePicture(uniqueId, avatar)));
+    root.append(style, open, save);
     host.refresh = () => {};
     isolateEvents(host);
     return host;
   }
+
 
   /* A thumbnail's link, and the box its bar goes in: the link itself or the nearest ancestor of
      the same size that is positioned (so the bar can sit over it). */
@@ -927,12 +932,19 @@
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["id", "href", "data-more-menu-item-id"] });
     /* Scrolling the feed changes which entry the buttons beside it belong to. */
     document.addEventListener("scroll", queueScan, { capture: true, passive: true });
+    /* Leaving the page (opening a picture in a new tab, switching windows) hides the bars over
+       thumbnails: the pointer may be elsewhere when the user comes back. */
+    const onLeave = () => {
+      for (const host of document.querySelectorAll(HOST_TAG + "[data-hover]")) host.removeAttribute("data-hover");
+    };
+    addEventListener("blur", onLeave);
     queueScan();
 
     return {
       stop() {
         observer.disconnect();
         document.removeEventListener("scroll", queueScan, { capture: true });
+        removeEventListener("blur", onLeave);
         for (const host of document.querySelectorAll(HOST_TAG)) host.remove();
       },
     };
