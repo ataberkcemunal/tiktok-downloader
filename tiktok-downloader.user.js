@@ -449,12 +449,97 @@
     saveBlob(blob, "@" + uniqueId + " - profile picture." + (extensionOf(blob.type) || "jpg"));
   }
 
-  /* Opens the profile's picture in a new tab, at once (inside the click, so pop-up blockers
-     allow it). */
+  /* Opens the profile's picture in a new tab of ours, as Instagram Downloader does: the tab is
+     opened at once (inside the click, so pop-up blockers allow it) and filled in once the
+     picture has been downloaded. */
   function openProfilePicture(uniqueId, avatar) {
-    const url = profilePictureUrls(uniqueId, avatar)[0];
-    if (!url) throw new Error("Couldn't find this profile's picture.");
-    window.open(url, "_blank", "noopener");
+    const tab = openLoadingTab();
+    if (!tab) return;
+    const name = "@" + uniqueId + " - profile picture";
+    const urls = profilePictureUrls(uniqueId, avatar);
+    largestImage(urls)
+      .then(blob => showImage(tab, { blob }, name))
+      .catch(() => {
+        if (urls[0]) showImage(tab, { url: urls[0] }, name);
+        else if (!tab.closed) tab.document.body.textContent = "Couldn't find this profile's picture.";
+      });
+  }
+
+  /* ---------- Opening in a tab ---------- */
+
+  function openLoadingTab() {
+    const tab = window.open("about:blank", "_blank");
+    if (!tab) {
+      alert("Allow pop-ups for tiktok.com to open pictures in a new tab.");
+      return null;
+    }
+    tab.document.title = "Loading…";
+    tab.document.body.style.cssText =
+      "margin:0;min-height:100vh;background:#111;color:#888;font:14px -apple-system,sans-serif;" +
+      "display:flex;align-items:center;justify-content:center";
+    tab.document.body.textContent = "Loading…";
+    return tab;
+  }
+
+  /* Shows a picture in the tab, from a downloaded file or, when it couldn't be downloaded, from
+     its address. Clicking zooms to full size (twice the size for small pictures) keeping the
+     clicked point under the pointer; clicking again fits it. Only a downloaded file gets a
+     Download button (and the S key): a picture shown from its address couldn't be downloaded. */
+  function showImage(tab, { blob, url }, namePrefix) {
+    if (tab.closed) return;
+    const doc = tab.document;
+    const name = namePrefix + "." + (blob ? extensionOf(blob.type) || "jpg" : "jpg");
+    doc.title = name;
+    doc.body.textContent = "";
+    doc.body.style.cssText =
+      "margin:0;min-height:100vh;box-sizing:border-box;padding-bottom:" + (blob ? 80 : 0) + "px;background:#111;" +
+      "color:#ccc;font:14px -apple-system,sans-serif;display:flex;align-items:center;justify-content:center";
+    const image = doc.createElement("img");
+    image.src = blob ? tab.URL.createObjectURL(blob) : url;
+    const fitStyle = "max-width:100vw;max-height:calc(100vh - " + (blob ? 80 : 0) + "px);object-fit:contain;cursor:zoom-in";
+    image.style.cssText = fitStyle;
+    doc.body.append(image);
+
+    let zoomed = false;
+    image.addEventListener("click", event => {
+      const rect = image.getBoundingClientRect();
+      const ratioX = (event.clientX - rect.left) / rect.width;
+      const ratioY = (event.clientY - rect.top) / rect.height;
+      zoomed = !zoomed;
+      if (!zoomed) {
+        doc.body.style.alignItems = doc.body.style.justifyContent = "center";
+        image.style.cssText = fitStyle;
+        return;
+      }
+      const width = Math.max(image.naturalWidth, rect.width * 2);
+      doc.body.style.alignItems = doc.body.style.justifyContent = "flex-start";
+      image.style.cssText = "flex:none;margin:auto;max-width:none;max-height:none;cursor:zoom-out;width:" + width + "px";
+      const zoomedRect = image.getBoundingClientRect();
+      doc.scrollingElement.scrollLeft = ratioX * zoomedRect.width - event.clientX;
+      doc.scrollingElement.scrollTop = ratioY * zoomedRect.height - event.clientY;
+    });
+
+    if (blob) {
+      /* The Download button, fixed at the bottom centre so it stays in reach while zoomed. */
+      const host = doc.createElement(HOST_TAG);
+      host.style.cssText = "position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:1";
+      const root = host.attachShadow({ mode: "open" });
+      const style = doc.createElement("style");
+      style.textContent = PILL_CSS + "button.busy svg{animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}";
+      const bar = doc.createElement("div");
+      bar.className = "pill";
+      const button = makeSmallButton("download", "Download (S)", () => saveBlob(blob, name));
+      bar.append(button);
+      root.append(style, bar);
+      doc.body.append(host);
+      doc.addEventListener("keydown", event => {
+        if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "s") {
+          event.preventDefault();
+          button.click();
+        }
+      });
+    }
+    tab.focus();
   }
 
   /* ---------- Buttons ---------- */
@@ -471,12 +556,12 @@
     done: ["m5 12.5 4.5 4.5L19 7"],
     /* Filled versions, for the buttons among TikTok's own filled icons (like, comment,
        favourite, share). An arrow over a tray: */
-    downloadSolid: { fill: [
+    downloadSolid: { solid: [
       "M12 2a1.75 1.75 0 0 1 1.75 1.75v7.6l2.51-2.5a1.75 1.75 0 1 1 2.48 2.47l-5.5 5.5a1.75 1.75 0 0 1-2.48 0l-5.5-5.5a1.75 1.75 0 1 1 2.48-2.47l2.51 2.5v-7.6A1.75 1.75 0 0 1 12 2z",
       "M3.75 15a1.75 1.75 0 0 1 1.75 1.75v1.25c0 .28.22.5.5.5h12a.5.5 0 0 0 .5-.5v-1.25a1.75 1.75 0 1 1 3.5 0V18a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4v-1.25A1.75 1.75 0 0 1 3.75 15z",
     ] },
     /* A photo in front of another, with a mountain and a sun cut out of it: */
-    stackSolid: { fill: [
+    stackSolid: { solid: [
       "M5 2.5h10.5a1.5 1.5 0 0 1 0 3h-10v10a1.5 1.5 0 0 1-3 0V5A2.5 2.5 0 0 1 5 2.5z",
       "M9.5 7.5h10A2.5 2.5 0 0 1 22 10v9a2.5 2.5 0 0 1-2.5 2.5h-10A2.5 2.5 0 0 1 7 19v-9a2.5 2.5 0 0 1 2.5-2.5zM12 10a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM10 19h9.5l-3.2-4.2-2.1 2.6-1.4-1.6z",
     ] },
@@ -502,12 +587,15 @@
     const svg = document.createElementNS(namespace, "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
     svg.setAttribute("aria-hidden", "true");
+    /* An icon is a list of outline paths, or { solid: [...] } for a filled one. (Not "fill":
+       every list already has a fill method.) */
     const shape = ICONS[name];
-    if (shape.fill) svg.classList.add("solid");
-    for (const data of shape.fill || shape) {
+    const solid = !Array.isArray(shape);
+    if (solid) svg.classList.add("solid");
+    for (const data of solid ? shape.solid : shape) {
       const path = document.createElementNS(namespace, "path");
       path.setAttribute("d", data);
-      if (shape.fill) path.setAttribute("fill-rule", "evenodd");
+      if (solid) path.setAttribute("fill-rule", "evenodd");
       svg.append(path);
     }
     return svg;
