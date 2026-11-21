@@ -16,7 +16,8 @@
  * offers, without the watermark. Photo posts are saved as one image per photo, at full size.
  * The button goes under Share in the feed and on a video's page, beside Favourites in the
  * viewer opened from a grid, and on a small bar over every thumbnail (profile, search,
- * explore, the videos beside a video) that shows while the pointer is over it.
+ * explore, the videos beside a video) that shows while the pointer is over it, and beside
+ * Share under a story.
  *
  * For a photo post, the main button saves the photo that is showing, and pointing at it opens
  * one more above it that saves every photo (thumbnails save every photo). A profile's picture gets a button that saves it at its largest.
@@ -525,6 +526,10 @@
     ".more::after{content:'';position:absolute;left:0;right:0;top:100%;height:10px}",
     ":host(:hover) .more,.more:focus-within{opacity:1;pointer-events:auto}",
     ":host([data-row]) .more{left:0;transform:none}",
+    /* Under a story, among its round buttons: no background and no label. */
+    ":host([data-story]){margin:0}",
+    ":host([data-story]) button{background:transparent}",
+    ":host([data-story]) .label{display:none}",
   ].join("") + PILL_CSS;
 
   /* The circle element and the label of TikTok's Share button, to copy colours from: the first
@@ -547,10 +552,11 @@
 
   /* The button for one video. Its label shows the quality that will be saved (or the number of
      photos) once the video's details are known; hovering looks them up if they aren't yet. */
-  function makeActionHost(id, share, { row = false, scope = () => null } = {}) {
+  function makeActionHost(id, share, { row = false, story = false, scope = () => null } = {}) {
     const host = document.createElement(HOST_TAG);
     host.dataset.id = id;
     if (row) host.dataset.row = "";
+    if (story) host.dataset.story = "";
     const root = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
     style.textContent = ACTION_CSS;
@@ -558,7 +564,8 @@
     if (colours.circle) host.style.setProperty("--circle", colours.circle);
     if (colours.fg) host.style.setProperty("--fg", colours.fg);
     if (colours.label) host.style.setProperty("--label", colours.label);
-    const shareGap = !row && share.parentElement?.nextElementSibling ? getComputedStyle(share.parentElement).marginBottom : "";
+    if (story) host.style.setProperty("--fg", getComputedStyle(share).color);
+    const shareGap = !row && !story && share.parentElement?.nextElementSibling ? getComputedStyle(share.parentElement).marginBottom : "";
     if (shareGap && shareGap !== "0px") host.style.setProperty("--gap", shareGap);
 
     const button = document.createElement("button");
@@ -851,6 +858,22 @@
           if (id) {
             const host = makeActionHost(id, favorite, { row: true });
             row.after(host);
+            hosts.add(host);
+          }
+        }
+      }
+      /* A story (opened from a profile picture): its round buttons under it, like and share,
+         each in a box of its own; the address names the story that is showing. */
+      const storyShare = document.querySelector('[class*="StoriesSocialBarContainer"] [data-e2e="share-btn"]');
+      const storyBox = storyShare?.parentElement;
+      if (storyBox?.parentElement) {
+        const id = location.pathname.match(/\/(?:video|photo)\/(\d{8,})/)?.[1] || null;
+        const existing = storyBox.parentElement.querySelector(":scope > " + HOST_TAG);
+        if (!(existing && existing.dataset.id === id)) {
+          existing?.remove();
+          if (id) {
+            const host = makeActionHost(id, storyShare, { story: true });
+            storyBox.after(host);
             hosts.add(host);
           }
         }
