@@ -19,8 +19,8 @@
  * explore, the videos beside a video) that shows while the pointer is over it, and beside
  * Share under a story.
  *
- * For a photo post, the main button saves the photo that is showing, and pointing at it opens
- * one more above it that saves every photo (thumbnails save every photo). A profile's picture gets a button that saves it at its largest.
+ * For a photo post, the button saves the photo that is showing (its label says which, "3/7"),
+ * and a second one under it saves every photo (thumbnails save every photo). A profile's picture gets a button that saves it at its largest.
  *
  * Quality: every video comes in several versions (video.bitrateInfo). TikTok's player and its
  * own Download button use a 540p H.264 one (the Download file also has a watermark and a
@@ -500,9 +500,13 @@
   }
 
   /* Looks like TikTok's own buttons in the column: a 48 px circle with a small bold label under
-     it. Colours are copied from the Share button, so light and dark themes both match. */
+     it. Colours are copied from the Share button, so light and dark themes both match. A photo
+     post has a second one under it, for every photo. */
   const ACTION_CSS = [
     ":host{all:initial;display:flex;flex-direction:column;align-items:center;margin-top:var(--gap,0px)}",
+    ".unit{display:flex;flex-direction:column;align-items:center}",
+    ".unit[hidden]{display:none}",
+    ".unit + .unit{margin-top:var(--unit-gap,12px)}",
     "button{all:unset;box-sizing:border-box;width:48px;height:48px;border-radius:999px;display:grid;place-items:center;",
     "cursor:pointer;background:var(--circle,rgba(22,24,35,.06));color:var(--fg,currentColor);transition:transform .1s,opacity .15s}",
     "button:hover{opacity:.75}",
@@ -515,22 +519,17 @@
     ".label{font:700 12px/16px -apple-system,sans-serif;color:var(--label,currentColor);text-align:center;white-space:nowrap}",
     /* In the viewer opened from a grid, the buttons sit in a row: a 32 px circle with its label
        beside it. */
-    ":host([data-row]){flex-direction:row;gap:6px;margin:0}",
+    ":host([data-row]){flex-direction:row;gap:20px;margin:0}",
+    ":host([data-row]) .unit{flex-direction:row;gap:6px}",
+    ":host([data-row]) .unit + .unit{margin:0}",
     ":host([data-row]) button{width:32px;height:32px}",
     ":host([data-row]) svg{width:18px;height:18px}",
-    /* The extra button opens above the main one while the pointer is over it. An invisible strip
-       bridges the gap so it stays open on the way over. */
-    ":host{position:relative}",
-    ".more{position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);z-index:1;opacity:0;pointer-events:none;transition:opacity .15s}",
-    ".more:empty{display:none}",
-    ".more::after{content:'';position:absolute;left:0;right:0;top:100%;height:10px}",
-    ":host(:hover) .more,.more:has(:focus-visible){opacity:1;pointer-events:auto}",
-    ":host([data-row]) .more{left:0;transform:none}",
-    /* Under a story, among its round buttons: no background and no label. */
-    ":host([data-story]){margin:0}",
+    /* Under a story, among its round buttons: side by side, no background and no label. */
+    ":host([data-story]){flex-direction:row;gap:4px;margin:0}",
+    ":host([data-story]) .unit + .unit{margin:0}",
     ":host([data-story]) button{background:transparent}",
     ":host([data-story]) .label{display:none}",
-  ].join("") + PILL_CSS;
+  ].join("");
 
   /* The circle element and the label of TikTok's Share button, to copy colours from: the first
      element with a background that is round. */
@@ -550,8 +549,10 @@
     };
   }
 
-  /* The button for one video. Its label shows the quality that will be saved (or the number of
-     photos) once the video's details are known; hovering looks them up if they aren't yet. */
+  /* The buttons for one post. The first saves the video, or for a photo post the photo that is
+     showing; its label shows the quality that will be saved, or which photo ("3/7"), once the
+     post's details are known (hovering looks them up if they aren't yet). A photo post with
+     more than one photo also gets a second button, under the first, that saves them all. */
   function makeActionHost(id, share, { row = false, story = false, scope = () => null } = {}) {
     const host = document.createElement(HOST_TAG);
     host.dataset.id = id;
@@ -565,44 +566,67 @@
     if (colours.fg) host.style.setProperty("--fg", colours.fg);
     if (colours.label) host.style.setProperty("--label", colours.label);
     if (story) host.style.setProperty("--fg", getComputedStyle(share).color);
+    /* The space TikTok leaves between its own buttons: a margin under each, or the column's gap. */
     const shareGap = !row && !story && share.parentElement?.nextElementSibling ? getComputedStyle(share.parentElement).marginBottom : "";
     if (shareGap && shareGap !== "0px") host.style.setProperty("--gap", shareGap);
+    const columnGap = share.parentElement?.parentElement ? getComputedStyle(share.parentElement.parentElement).rowGap : "";
+    const unitGap = shareGap && shareGap !== "0px" ? shareGap : /px$/.test(columnGap) && columnGap !== "0px" ? columnGap : "";
+    if (unitGap) host.style.setProperty("--unit-gap", unitGap);
 
-    const button = document.createElement("button");
-    button.type = "button";
-    button.append(icon("download"));
-    const label = document.createElement("span");
-    label.className = "label";
-    label.textContent = "Save";
-    const more = document.createElement("div");
-    more.className = "pill more";
-    root.append(style, button, label, more);
+    const makeUnit = iconName => {
+      const unit = document.createElement("div");
+      unit.className = "unit";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.append(icon(iconName));
+      const label = document.createElement("span");
+      label.className = "label";
+      unit.append(button, label);
+      return { unit, button, label };
+    };
+    const main = makeUnit("download");
+    main.label.textContent = "Save";
+    const all = makeUnit("stack");
+    all.unit.hidden = true;
+    root.append(style, main.unit, all.unit);
 
-    /* For a photo post the main button saves the photo that is showing, and pointing at it
-       shows one more above it that saves them all; a video has no extra button. */
-    let extrasFor = "";
-    const setExtras = item => {
-      const count = isPhotoPost(item) ? item.imagePost.images.length : 0;
-      const kind = count > 1 ? "photos" : "single";
-      if (extrasFor === kind) return;
-      extrasFor = kind;
-      more.replaceChildren(...(kind === "photos"
-        ? [makeSmallButton("stack", "Download all " + count + " photos", onProgress => downloadItem(id, onProgress))]
-        : []));
+    /* Which photo is showing, kept up to date while the post's photos slide by. */
+    let watching = 0;
+    let added = false;
+    const showIndex = item => {
+      const count = item.imagePost.images.length;
+      const index = shownPhotoIndex(item, scope());
+      main.label.textContent = index >= 0 ? index + 1 + "/" + count : "Photo";
+    };
+    const watch = item => {
+      if (watching) return;
+      watching = setInterval(() => {
+        if (host.isConnected) added = true;
+        else if (added) {
+          clearInterval(watching);
+          return;
+        }
+        showIndex(item);
+      }, 400);
     };
 
     const describe = item => {
-      setExtras(item);
       if (isPhotoPost(item)) {
         const count = item.imagePost.images.length;
-        label.textContent = "Photo";
-        button.title = "Download the photo that is showing · " + count + (count === 1 ? " photo" : " photos") + " in this post";
+        showIndex(item);
+        watch(item);
+        main.button.title = count > 1 ? "Download the photo that is showing" : "Download the photo";
+        all.unit.hidden = count < 2;
+        all.label.textContent = "All " + count;
+        all.button.title = "Download all " + count + " photos";
+        all.button.setAttribute("aria-label", all.button.title);
       } else {
         const best = rankVariants(item)[0];
-        label.textContent = qualityLabel(best) || "Save";
-        button.title = "Download video · " + qualityTitle(best);
+        main.label.textContent = qualityLabel(best) || "Save";
+        main.button.title = "Download video · " + qualityTitle(best);
+        all.unit.hidden = true;
       }
-      button.setAttribute("aria-label", button.title);
+      main.button.setAttribute("aria-label", main.button.title);
     };
     host.refresh = () => {
       if (items.has(id)) describe(items.get(id));
@@ -612,12 +636,14 @@
       if (!items.has(id)) itemFor(id).then(describe).catch(() => {});
     });
 
-    wireButton(button, "download", async onProgress => {
+    const after = () => {
+      if (items.has(id)) describe(items.get(id));
+    };
+    wireButton(main.button, "download", async onProgress => {
       const item = await itemFor(id);
       return isPhotoPost(item) ? downloadShownPhoto(id, scope()) : downloadItem(id, onProgress);
-    }, () => {
-      if (items.has(id)) describe(items.get(id));
-    });
+    }, after);
+    wireButton(all.button, "stack", onProgress => downloadItem(id, onProgress), after);
     isolateEvents(host);
     return host;
   }
