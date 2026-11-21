@@ -449,97 +449,13 @@
     saveBlob(blob, "@" + uniqueId + " - profile picture." + (extensionOf(blob.type) || "jpg"));
   }
 
-  /* Opens the profile's picture in a new tab of ours, as Instagram Downloader does: the tab is
-     opened at once (inside the click, so pop-up blockers allow it) and filled in once the
-     picture has been downloaded. */
+  /* Opens the profile's picture at its own address in a new tab (inside the click, so pop-up
+     blockers allow it). The browser shows it as it is, so it can be saved from there: the tab
+     needs no Download button of ours. */
   function openProfilePicture(uniqueId, avatar) {
-    const tab = openLoadingTab();
-    if (!tab) return;
-    const name = "@" + uniqueId + " - profile picture";
-    const urls = profilePictureUrls(uniqueId, avatar);
-    largestImage(urls)
-      .then(blob => showImage(tab, { blob }, name))
-      .catch(() => {
-        if (urls[0]) showImage(tab, { url: urls[0] }, name);
-        else if (!tab.closed) tab.document.body.textContent = "Couldn't find this profile's picture.";
-      });
-  }
-
-  /* ---------- Opening in a tab ---------- */
-
-  function openLoadingTab() {
-    const tab = window.open("about:blank", "_blank");
-    if (!tab) {
-      alert("Allow pop-ups for tiktok.com to open pictures in a new tab.");
-      return null;
-    }
-    tab.document.title = "Loading…";
-    tab.document.body.style.cssText =
-      "margin:0;min-height:100vh;background:#111;color:#888;font:14px -apple-system,sans-serif;" +
-      "display:flex;align-items:center;justify-content:center";
-    tab.document.body.textContent = "Loading…";
-    return tab;
-  }
-
-  /* Shows a picture in the tab, from a downloaded file or, when it couldn't be downloaded, from
-     its address. Clicking zooms to full size (twice the size for small pictures) keeping the
-     clicked point under the pointer; clicking again fits it. Only a downloaded file gets a
-     Download button (and the S key): a picture shown from its address couldn't be downloaded. */
-  function showImage(tab, { blob, url }, namePrefix) {
-    if (tab.closed) return;
-    const doc = tab.document;
-    const name = namePrefix + "." + (blob ? extensionOf(blob.type) || "jpg" : "jpg");
-    doc.title = name;
-    doc.body.textContent = "";
-    doc.body.style.cssText =
-      "margin:0;min-height:100vh;box-sizing:border-box;padding-bottom:" + (blob ? 80 : 0) + "px;background:#111;" +
-      "color:#ccc;font:14px -apple-system,sans-serif;display:flex;align-items:center;justify-content:center";
-    const image = doc.createElement("img");
-    image.src = blob ? tab.URL.createObjectURL(blob) : url;
-    const fitStyle = "max-width:100vw;max-height:calc(100vh - " + (blob ? 80 : 0) + "px);object-fit:contain;cursor:zoom-in";
-    image.style.cssText = fitStyle;
-    doc.body.append(image);
-
-    let zoomed = false;
-    image.addEventListener("click", event => {
-      const rect = image.getBoundingClientRect();
-      const ratioX = (event.clientX - rect.left) / rect.width;
-      const ratioY = (event.clientY - rect.top) / rect.height;
-      zoomed = !zoomed;
-      if (!zoomed) {
-        doc.body.style.alignItems = doc.body.style.justifyContent = "center";
-        image.style.cssText = fitStyle;
-        return;
-      }
-      const width = Math.max(image.naturalWidth, rect.width * 2);
-      doc.body.style.alignItems = doc.body.style.justifyContent = "flex-start";
-      image.style.cssText = "flex:none;margin:auto;max-width:none;max-height:none;cursor:zoom-out;width:" + width + "px";
-      const zoomedRect = image.getBoundingClientRect();
-      doc.scrollingElement.scrollLeft = ratioX * zoomedRect.width - event.clientX;
-      doc.scrollingElement.scrollTop = ratioY * zoomedRect.height - event.clientY;
-    });
-
-    if (blob) {
-      /* The Download button, fixed at the bottom centre so it stays in reach while zoomed. */
-      const host = doc.createElement(HOST_TAG);
-      host.style.cssText = "position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:1";
-      const root = host.attachShadow({ mode: "open" });
-      const style = doc.createElement("style");
-      style.textContent = PILL_CSS + "button.busy svg{animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}";
-      const bar = doc.createElement("div");
-      bar.className = "pill";
-      const button = makeSmallButton("download", "Download (S)", () => saveBlob(blob, name));
-      bar.append(button);
-      root.append(style, bar);
-      doc.body.append(host);
-      doc.addEventListener("keydown", event => {
-        if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "s") {
-          event.preventDefault();
-          button.click();
-        }
-      });
-    }
-    tab.focus();
+    const url = profilePictureUrls(uniqueId, avatar)[0];
+    if (!url) throw new Error("Couldn't find this profile's picture.");
+    window.open(url, "_blank", "noopener");
   }
 
   /* ---------- Buttons ---------- */
