@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         TikTok Downloader
-// @version      0.2.15
+// @version      0.2.16
 // @description  Adds a download button to TikTok videos and photo posts that saves the best quality without a watermark.
 // @match        https://www.tiktok.com/*
 // @grant        GM_getValue
@@ -49,7 +49,7 @@
 
   const AUTO_START = true;
   /* Set by build.js to the userscript's version. */
-  const VERSION = "0.2.15";
+  const VERSION = "0.2.16";
   const HOST_TAG = "tiktok-downloader";
   const LOG = "[TikTok Downloader]";
   const CODEC_SETTING = "tiktokDownloader.codec";
@@ -252,7 +252,7 @@
 
   /* ---------- What was downloaded ---------- */
 
-  /* Downloads are remembered in this browser, so their buttons keep a check mark: "v:<id>" a
+  /* Downloads are remembered in this browser, so their buttons turn pink: "v:<id>" a
      video, "p:<id>:<n>" one photo of a post (counted from 0), "a:<id>" all of a post's photos,
      "u:<username>" a profile picture. A story is remembered for a day (it is gone after that),
      anything else for good. Each key maps to the time it is forgotten, or null for never. */
@@ -760,6 +760,9 @@
 
   /* The frosted pill that holds small buttons: the extra buttons beside the main one, and the
      bars over thumbnails and the profile picture. */
+  /* TikTok's own pink-red (a liked heart), for buttons whose file has been downloaded. */
+  const DONE_COLOUR = "#fe2c55";
+
   const PILL_CSS = [
     ".pill{display:flex;gap:2px;padding:3px;border-radius:999px;color:#fff;",
     "background:rgba(22,22,22,.55);-webkit-backdrop-filter:blur(14px) saturate(1.6);backdrop-filter:blur(14px) saturate(1.6);",
@@ -771,6 +774,7 @@
     ".pill button:focus-visible{outline:2px solid currentColor;outline-offset:2px}",
     ".pill svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}",
     ".pill .percent{font:700 10px/1 -apple-system,sans-serif}",
+    ".pill button.downloaded{color:" + DONE_COLOUR + "}",
   ].join("");
 
   function icon(name) {
@@ -809,6 +813,7 @@
     "button:focus-visible{outline:2px solid currentColor;outline-offset:2px}",
     "svg{width:var(--icon,24px);height:var(--icon,24px);fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}",
     "svg.solid{fill:currentColor;stroke:none}",
+    "button.downloaded{color:" + DONE_COLOUR + "}",
     "button.busy svg{animation:spin .8s linear infinite}",
     "@keyframes spin{to{transform:rotate(360deg)}}",
     ".percent{font:700 12px/1 var(--font,-apple-system,sans-serif)}",
@@ -988,8 +993,8 @@
   /* Clicking a button runs its action. While a download runs: a spinner, then the percentage
      (when the action reports it), then a check mark; an error is shown. An action that returns
      nothing (opening a tab) runs inside the click, so pop-up blockers allow it. A button with a
-     key (doneKey, a function, since a photo post's key changes with the photo showing) keeps
-     the check mark once that has been downloaded, and still downloads it again when clicked.
+     key (doneKey, a function, since a photo post's key changes with the photo showing) turns
+     pink once that has been downloaded, and still downloads it again when clicked.
      button.repaint() shows the right icon and title for its key. */
   function wireButton(button, iconName, action, after, doneKey) {
     const setIcon = name => button.replaceChildren(icon(name));
@@ -998,8 +1003,10 @@
       button.painted = true;
       if (button.classList.contains("busy") || button.querySelector(".percent")) return;
       const title = (button.title || "").replace(/ · Downloaded.*$/, "");
+      /* Downloaded: the same icon in TikTok's pink, as a liked heart turns red. */
       const done = isDownloaded(doneKey?.());
-      setIcon(done ? (Array.isArray(ICONS[iconName]) ? "done" : "doneSolid") : iconName);
+      setIcon(iconName);
+      button.classList.toggle("downloaded", done);
       button.title = done ? title + " · Downloaded, click to download again" : title;
       button.setAttribute("aria-label", button.title);
     };
