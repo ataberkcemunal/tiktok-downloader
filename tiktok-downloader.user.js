@@ -1,9 +1,13 @@
 // ==UserScript==
 // @name         TikTok Downloader
-// @version      0.2.14
+// @version      0.2.15
 // @description  Adds a download button to TikTok videos and photo posts that saves the best quality without a watermark.
 // @match        https://www.tiktok.com/*
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
+// @grant        GM_listValues
+// @grant        unsafeWindow
 // @sandbox      raw
 // @inject-into  page
 // @run-at       document-start
@@ -45,7 +49,7 @@
 
   const AUTO_START = true;
   /* Set by build.js to the userscript's version. */
-  const VERSION = "0.2.14";
+  const VERSION = "0.2.15";
   const HOST_TAG = "tiktok-downloader";
   const LOG = "[TikTok Downloader]";
   const CODEC_SETTING = "tiktokDownloader.codec";
@@ -64,9 +68,13 @@
 
   /* The browser's own fetch, taken before TikTok wraps it. Files from TikTok's servers are fetched
      with it; TikTok's API is called through window.fetch, which TikTok signs. */
-  const shared = window.__tiktokDownloaderShared || (window.__tiktokDownloaderShared = {
+  /* The page's own window. With Tampermonkey's GM_* functions granted, the script's "window"
+     can be Tampermonkey's wrapper around it, and the page's is unsafeWindow; the fetch and
+     XMLHttpRequest of the page must be the ones wrapped. */
+  const page = typeof unsafeWindow === "object" && unsafeWindow ? unsafeWindow : window;
+  const shared = page.__tiktokDownloaderShared || (page.__tiktokDownloaderShared = {
     items: new Map(),
-    nativeFetch: window.fetch.bind(window),
+    nativeFetch: page.fetch.bind(page),
     listening: false,
   });
   const items = shared.items;
@@ -113,8 +121,8 @@
     if (shared.listening) return;
     shared.listening = true;
 
-    const pageFetch = window.fetch;
-    window.fetch = function (input) {
+    const pageFetch = page.fetch;
+    page.fetch = function (input) {
       const result = pageFetch.apply(this, arguments);
       const url = typeof input === "string" ? input : input?.url;
       if (isApiUrl(url)) {
@@ -123,8 +131,8 @@
       return result;
     };
 
-    const open = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function (method, url) {
+    const open = page.XMLHttpRequest.prototype.open;
+    page.XMLHttpRequest.prototype.open = function (method, url) {
       if (isApiUrl(url)) {
         this.addEventListener("load", () => {
           try {
@@ -179,7 +187,7 @@
     };
     if (!fresh && fromPage()) return items.get(id);
     try {
-      const response = await window.fetch("/api/item/detail/?aid=1988&itemId=" + id, { credentials: "include" });
+      const response = await page.fetch("/api/item/detail/?aid=1988&itemId=" + id, { credentials: "include" });
       const data = await response.json();
       const item = data?.itemInfo?.itemStruct;
       if (isItem(item) && item.id === id) {
@@ -247,9 +255,7 @@
   /* Downloads are remembered in this browser, so their buttons keep a check mark: "v:<id>" a
      video, "p:<id>:<n>" one photo of a post (counted from 0), "a:<id>" all of a post's photos,
      "u:<username>" a profile picture. A story is remembered for a day (it is gone after that),
-     anything else for good. They are kept in IndexedDB (localStorage is small and shared with
-     TikTok's own data); like any site data, clearing TikTok's site data clears them too. Each
-     key maps to the time it is forgotten, or null for never. */
+     anything else for good. Each key maps to the time it is forgotten, or null for never. */
   const DAY = 24 * 60 * 60 * 1000;
   const STORE = "downloaded";
   const downloaded = new Map();
@@ -273,44 +279,66 @@
     r.onerror = () => reject(r.error);
   });
 
-  /* Opens the database, reads every saved download into the map (dropping those whose time is
-     up), and moves over the ones the first versions kept in localStorage: a story's (due within
-     a day) keeps its time, any other is kept for good. */
+  /* Where downloads are kept: Tampermonkey's own storage when it is granted (it survives
+     clearing TikTok's site data), one value per download, "d:<key>"; otherwise IndexedDB. */
+  const gm = typeof GM_getValue === "function" && typeof GM_setValue === "function" &&
+    typeof GM_listValues === "function" && typeof GM_deleteValue === "function";
+
+  /* Reads every saved download into the map, dropping those whose time is up, and moves over
+     older lists: the localStorage one of the first versions (a story's, due within a day,
+     keeps its time; any other is kept for good) and, with Tampermonkey's storage, the
+     IndexedDB one, which is then deleted. */
   const database = (async () => {
+    const now = Date.now();
+    const moved = [];
+    const keep = (key, until) => {
+      if (until !== null && until <= now) return false;
+      if (!downloaded.has(key)) downloaded.set(key, until);
+      return true;
+    };
+    let db = null;
     try {
+      if (gm) {
+        for (const name of GM_listValues()) {
+          if (name.startsWith("d:") && !keep(name.slice(2), GM_getValue(name, null))) GM_deleteValue(name);
+        }
+      }
       const open = indexedDB.open("tiktokDownloader", 1);
       open.onupgradeneeded = () => open.result.createObjectStore(STORE);
-      const db = await request(open);
-      const now = Date.now();
+      db = await request(open);
       const store = db.transaction(STORE, "readwrite").objectStore(STORE);
       const keys = await request(store.getAllKeys());
       const values = await request(store.getAll());
       keys.forEach((key, index) => {
-        const until = values[index];
-        if (until !== null && until <= now) store.delete(key);
-        else downloaded.set(key, until);
+        if (!keep(key, values[index])) store.delete(key);
+        else if (gm) moved.push(key);
       });
       try {
         const old = JSON.parse(localStorage.getItem(DONE_SETTING) || "null");
         if (old) {
           for (const [key, until] of Object.entries(old)) {
             if (until <= now || downloaded.has(key)) continue;
-            const kept = until <= now + DAY ? until : null;
-            downloaded.set(key, kept);
-            store.put(kept, key);
+            keep(key, until <= now + DAY ? until : null);
+            if (gm) moved.push(key);
+            else store.put(downloaded.get(key), key);
           }
           localStorage.removeItem(DONE_SETTING);
         }
       } catch (error) {
         console.warn(LOG, "couldn't move the old downloads", error);
       }
-      return db;
+      if (gm) {
+        for (const key of moved) GM_setValue("d:" + key, downloaded.get(key));
+        db.close();
+        indexedDB.deleteDatabase("tiktokDownloader");
+        db = null;
+      }
     } catch (error) {
-      console.warn(LOG, "couldn't open the list of downloads", error);
-      return null;
+      console.warn(LOG, "couldn't read the list of downloads", error);
     } finally {
       repaintAll();
     }
+    return db;
   })();
 
   function markDownloaded(key) {
@@ -318,6 +346,10 @@
     const id = key.split(":")[1];
     const until = items.get(id)?.story ? Date.now() + DAY : null;
     downloaded.set(key, until);
+    if (gm) {
+      GM_setValue("d:" + key, until);
+      return;
+    }
     database.then(db => {
       if (db) db.transaction(STORE, "readwrite").objectStore(STORE).put(until, key);
     }).catch(error => console.warn(LOG, "couldn't remember the download", error));
@@ -1336,15 +1368,15 @@
     }
     startListening();
     console.info(LOG, "version " + VERSION);
-    if (window.__tiktokDownloader) {
-      window.__tiktokDownloader.stop();
-      window.__tiktokDownloader = null;
+    if (page.__tiktokDownloader) {
+      page.__tiktokDownloader.stop();
+      page.__tiktokDownloader = null;
       toast("TikTok Downloader is off.");
       return;
     }
     const begin = () => {
       collectPageData();
-      window.__tiktokDownloader = startButtons();
+      page.__tiktokDownloader = startButtons();
       if (!AUTO_START) toast("TikTok Downloader is on. Click the bookmarklet again to turn it off.");
     };
     if (document.body) begin();
