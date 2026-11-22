@@ -8,6 +8,7 @@ A userscript that adds download buttons to TikTok and saves videos in the best q
 - **Profile picture:** open it in a new tab or download it at its largest.
 - **All posts:** "All posts" at the end of a profile's row of tabs opens a tab with every post as a card, with download buttons.
 - **Download history:** downloaded items turn pink. Downloads are remembered in Tampermonkey's storage; stories are forgotten after a day.
+- **List of downloads:** choose **Downloads** in Tampermonkey's menu to see everything you downloaded, newest first. Each line has a small picture, the account, the caption, the time and a link, and the list can be searched. Forgetting a line makes its button plain again; the file stays where it is.
 
 Files are named `username (Display Name) - caption - id`.
 
