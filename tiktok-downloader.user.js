@@ -26,6 +26,11 @@
  * For a photo post, the button saves the photo that is showing (its label says which, "3/7"),
  * and a second one under it saves every photo (thumbnails save every photo). A profile's picture gets a button that saves it at its largest.
  *
+ * On a profile, an arrow on the corner of the Videos tab's icon opens a tab with its posts as
+ * cards, as in Instagram Downloader: each holds the video, or every photo of a photo post side
+ * by side, at full size, with download buttons. More load as the tab is scrolled; a switch
+ * shows only photo posts.
+ *
  * Quality: every video comes in several versions (video.bitrateInfo). TikTok's player and its
  * own Download button use a 540p H.264 one (the Download file also has a watermark and a
  * 4-second end card); the largest is often 720p or 1080p H.265. The versions are ranked by
@@ -481,22 +486,29 @@
 
   /* Each photo of a photo post as its own file, at the size TikTok stores it. The addresses are
      signed, so they are used as they are. */
+  /* One photo of a photo post, saved as "… - 03.jpg", counted from 1. */
+  async function savePhoto(item, index) {
+    const images = item.imagePost.images;
+    let blob = null;
+    for (const url of images[index].imageURL?.urlList || []) {
+      try {
+        blob = await fetchChecked(url, { kind: "image" });
+        break;
+      } catch (error) {
+        console.warn(LOG, "photo " + (index + 1) + " failed at " + new URL(url).host, error);
+      }
+    }
+    if (!blob) throw new Error("Couldn't download photo " + (index + 1) + " of " + images.length + ".");
+    const width = Math.max(2, String(images.length).length);
+    saveBlob(blob, fileBase(item) + " - " + String(index + 1).padStart(width, "0") + "." + (extensionOf(blob.type) || "jpg"));
+  }
+
+  /* Every photo is remembered on its own too, so each one's button turns pink. */
   async function downloadPhotos(item, onProgress) {
     const images = item.imagePost.images;
-    const base = fileBase(item);
-    const width = String(images.length).length < 2 ? 2 : String(images.length).length;
     for (let index = 0; index < images.length; index++) {
-      let blob = null;
-      for (const url of images[index].imageURL?.urlList || []) {
-        try {
-          blob = await fetchChecked(url, { kind: "image" });
-          break;
-        } catch (error) {
-          console.warn(LOG, "photo " + (index + 1) + " failed at " + new URL(url).host, error);
-        }
-      }
-      if (!blob) throw new Error("Couldn't download photo " + (index + 1) + " of " + images.length + ".");
-      saveBlob(blob, base + " - " + String(index + 1).padStart(width, "0") + "." + (extensionOf(blob.type) || "jpg"));
+      await savePhoto(item, index);
+      markDownloaded("p:" + item.id + ":" + index);
       onProgress?.((index + 1) / images.length);
       /* Browsers drop downloads started too close together. */
       if (index < images.length - 1) await wait(250);
@@ -568,19 +580,8 @@
     const item = await itemFor(id);
     const images = item.imagePost?.images || [];
     const index = shownPhotoIndex(item, scope);
-    if (index < 0) throw new Error("Couldn't tell which photo is showing.");
-    let blob = null;
-    for (const url of images[index].imageURL?.urlList || []) {
-      try {
-        blob = await fetchChecked(url, { kind: "image" });
-        break;
-      } catch (error) {
-        console.warn(LOG, "photo failed at " + new URL(url).host, error);
-      }
-    }
-    if (!blob) throw new Error("Couldn't download this photo.");
-    const width = Math.max(2, String(images.length).length);
-    saveBlob(blob, fileBase(item) + " - " + String(index + 1).padStart(width, "0") + "." + (extensionOf(blob.type) || "jpg"));
+    if (index < 0 || !images[index]) throw new Error("Couldn't tell which photo is showing.");
+    await savePhoto(item, index);
   }
 
   /* The addresses of a profile's picture (avatarLarger, 1080 at most): from a video of theirs
@@ -656,10 +657,11 @@
 
   /* ---------- Opening in a tab ---------- */
 
-  function openLoadingTab() {
-    const tab = window.open("about:blank", "_blank");
+  /* A tab can be opened from another tab of ours (from) as well: the click is in that one. */
+  function openLoadingTab(from = window) {
+    const tab = from.open("about:blank", "_blank");
     if (!tab) {
-      alert("Allow pop-ups for tiktok.com to open pictures in a new tab.");
+      from.alert("Allow pop-ups for tiktok.com to open pictures in a new tab.");
       return null;
     }
     tab.document.title = "Loading…";
@@ -731,6 +733,355 @@
     tab.focus();
   }
 
+  /* ---------- All posts in one tab ---------- */
+
+  /* As in Instagram Downloader: a tab with the profile's posts as cards, newest first (pinned
+     ones first, as on the profile), each holding the video, or every photo of a photo post side
+     by side, at full size. More load as the tab is scrolled; a switch shows only photo posts. */
+
+  /* TikTok answers a few lists in a row (about ten within a few minutes), then sends empty
+     answers and shows a puzzle on its page (its own profile grid stops loading too) until it is
+     solved. So pages are asked for only as the tab is scrolled, with a pause
+     between them, and an empty answer is tried again later, waiting longer each time. */
+  const POSTS_PAUSE = 2500;
+  const POSTS_RETRY = [10000, 20000, 40000, 60000, 120000];
+
+  /* The profile's secUid, which TikTok's list of posts asks for: from the page's own data, a
+     known video of theirs, or the profile's page. */
+  async function profileSecUid(uniqueId) {
+    const same = name => (name || "").toLowerCase() === uniqueId.toLowerCase();
+    const fromData = doc => {
+      try {
+        const data = JSON.parse(doc.getElementById("__UNIVERSAL_DATA_FOR_REHYDRATION__")?.textContent || "{}");
+        const user = data.__DEFAULT_SCOPE__?.["webapp.user-detail"]?.userInfo?.user;
+        return same(user?.uniqueId) && user.secUid ? user.secUid : null;
+      } catch (error) {
+        return null;
+      }
+    };
+    const known = fromData(document);
+    if (known) return known;
+    for (const item of items.values()) {
+      if (same(item.author?.uniqueId) && item.author.secUid) return item.author.secUid;
+    }
+    const response = await shared.nativeFetch("/@" + encodeURIComponent(uniqueId), { credentials: "include" });
+    const fetched = fromData(new DOMParser().parseFromString(await response.text(), "text/html"));
+    if (!fetched) throw new Error("Couldn't find this profile. Reload the page and try again.");
+    return fetched;
+  }
+
+  /* The next 16 posts, through TikTok's own fetch, which signs the request (unsigned, the answer
+     is empty). Every post comes with all its versions, or its photos. */
+  async function fetchPostsPage(secUid, cursor) {
+    const query = new URLSearchParams({
+      aid: "1988", secUid, count: "16", cursor, coverFormat: "2", needPinnedItemIds: "true", post_item_list_request_type: "0",
+    });
+    const response = await page.fetch("/api/post/item_list/?" + query, { credentials: "include" });
+    const data = response.ok ? await response.json().catch(() => null) : null;
+    if (!data) {
+      const error = new Error("TikTok isn't sending the posts right now. If the TikTok tab shows a puzzle, solve it there.");
+      error.limited = true;
+      throw error;
+    }
+    if (data.statusCode) throw new Error("TikTok didn't send the posts (" + (data.statusMsg || "code " + data.statusCode) + ").");
+    const list = (data.itemList || []).filter(isItem).map(normalizeItem);
+    for (const item of list) items.set(item.id, item);
+    return { list, cursor: String(data.cursor || ""), hasMore: !!data.hasMore };
+  }
+
+  const GALLERY_CSS = [
+    "body{margin:0;background:#111;color:#ddd;font:14px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}",
+    "main{max-width:1600px;margin:0 auto;padding:28px 28px 80px}",
+    "h1{margin:0 0 4px;font-size:22px;font-weight:600;color:#fff}",
+    ".status{color:#888;margin-bottom:24px}",
+    ".note{color:#888;padding:8px 0}",
+    ".filter{display:inline-flex;align-items:center;gap:6px;margin:-12px 0 24px;color:#bbb;cursor:pointer;user-select:none}",
+    "main.only-photos .post.video{display:none}",
+    /* A dense grid of cards, each as many cells wide as it has photos (set by layoutPosts);
+       everything in a 9:16 box like TikTok's grid, shown whole. */
+    ".posts{--cell:170px;display:grid;grid-template-columns:repeat(var(--columns,4),minmax(0,1fr));grid-auto-flow:row dense;gap:14px}",
+    ".post{min-width:0;padding:8px;border-radius:12px;background:#181818}",
+    ".post.photos{background:#161a22;box-shadow:inset 0 0 0 1px rgba(138,180,248,.4)}",
+    ".post-head{display:flex;align-items:center;gap:8px;min-height:30px;margin:0 2px 8px;font-size:12px;color:#999}",
+    ".post-head .date{color:#eee;font-weight:600;white-space:nowrap}",
+    ".post-head .items-count{padding:1px 7px;border-radius:999px;background:rgba(138,180,248,.18);color:#a8c7fa;font-weight:600}",
+    ".post-head .spacer{flex:1}",
+    ".post-head a{color:#8ab4f8;text-decoration:none;white-space:nowrap}",
+    ".grid{display:grid;grid-template-columns:repeat(var(--span,1),minmax(0,1fr));gap:8px;align-items:start}",
+    ".tile{position:relative;border-radius:10px;overflow:hidden;background:#1d1d1d}",
+    ".tile img,.tile video{display:block;width:100%;aspect-ratio:9/16;object-fit:contain;background:#0b0b0b}",
+    ".tile img{cursor:zoom-in}",
+    ".tile " + HOST_TAG + "{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity .15s}",
+    ".tile:hover " + HOST_TAG + ",.tile:focus-within " + HOST_TAG + "{opacity:1}",
+    ".label{position:absolute;right:8px;top:8px;padding:2px 8px;border-radius:999px;background:rgba(0,0,0,.55);color:#fff;font-size:12px;pointer-events:none}",
+  ].join("");
+
+  const SPIN_CSS = "button.busy svg{animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}";
+
+  /* A frosted pill of buttons in one of our tabs. */
+  function tabButtons(doc, css, buttons) {
+    const host = doc.createElement(HOST_TAG);
+    const root = host.attachShadow({ mode: "open" });
+    const style = doc.createElement("style");
+    style.textContent = PILL_CSS + SPIN_CSS + css;
+    const bar = doc.createElement("div");
+    bar.className = "pill bar";
+    bar.append(...buttons);
+    root.append(style, bar);
+    return host;
+  }
+
+  function openAllPosts(uniqueId) {
+    const tab = openLoadingTab();
+    if (!tab) return;
+    showAllPosts(tab, uniqueId).catch(error => {
+      console.error(LOG, error);
+      if (tab.closed) return;
+      const status = tab.document.querySelector(".status");
+      if (status) status.textContent = error.message || "Couldn't load the posts.";
+      else tab.document.body.textContent = error.message || "Couldn't load the posts.";
+    });
+  }
+
+  async function showAllPosts(tab, uniqueId) {
+    const secUid = await profileSecUid(uniqueId);
+    if (tab.closed) return;
+    const owner = ownerName(uniqueId, profileNickname(uniqueId));
+    const doc = tab.document;
+    doc.title = uniqueId + " · Posts";
+    doc.body.removeAttribute("style");
+    doc.body.textContent = "";
+    const style = doc.createElement("style");
+    style.textContent = GALLERY_CSS;
+    doc.head.append(style);
+    const main = doc.createElement("main");
+    const h1 = doc.createElement("h1");
+    h1.textContent = owner + " · Posts";
+    const status = doc.createElement("div");
+    status.className = "status";
+    status.textContent = "Loading posts…";
+    const filter = doc.createElement("label");
+    filter.className = "filter";
+    const onlyPhotos = doc.createElement("input");
+    onlyPhotos.type = "checkbox";
+    onlyPhotos.addEventListener("change", () => main.classList.toggle("only-photos", onlyPhotos.checked));
+    filter.append(onlyPhotos, doc.createTextNode(" Only photo posts"));
+    const list = doc.createElement("div");
+    list.className = "posts";
+    const end = doc.createElement("div");
+    end.className = "note";
+    main.append(h1, status, filter, list, end);
+    doc.body.append(main);
+    tab.addEventListener("resize", () => layoutPosts(list));
+    tab.focus();
+
+    /* The next page is asked for once the end of the list comes within a few screens. */
+    const nearEnd = () => end.getBoundingClientRect().top < tab.innerHeight * 3;
+    const seen = new Set();
+    let photoPosts = 0;
+    let cursor = "0";
+    for (let page = 0; ; page++) {
+      if (tab.closed) return;
+      while (page > 0 && !nearEnd()) {
+        await wait(300);
+        if (tab.closed) return;
+      }
+      let result = null;
+      for (let attempt = 0; !result; attempt++) {
+        end.textContent = "Loading more posts…";
+        try {
+          result = await fetchPostsPage(secUid, cursor);
+        } catch (error) {
+          if (!error.limited) {
+            end.textContent = "";
+            if (!seen.size) throw error;
+            status.textContent = seen.size + " posts loaded. " + error.message;
+            return;
+          }
+          /* Tried again after a while, counting down. */
+          const until = Date.now() + POSTS_RETRY[Math.min(attempt, POSTS_RETRY.length - 1)];
+          while (Date.now() < until) {
+            if (tab.closed) return;
+            end.textContent = error.message + " Trying again in " + Math.ceil((until - Date.now()) / 1000) + " s…";
+            await wait(1000);
+          }
+        }
+      }
+      if (tab.closed) return;
+      for (const item of result.list) {
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        if (isPhotoPost(item)) photoPosts++;
+        addPostCard(tab, list, item);
+      }
+      layoutPosts(list);
+      status.textContent = seen.size + (seen.size === 1 ? " post" : " posts") + " loaded, " + photoPosts +
+        (photoPosts === 1 ? " photo post" : " photo posts") + ". Click a photo to open it; hover for download buttons.";
+      if (!result.hasMore || !result.cursor || result.cursor === cursor || !result.list.length) break;
+      cursor = result.cursor;
+      end.textContent = "";
+      await wait(POSTS_PAUSE);
+    }
+    end.textContent = seen.size ? "That's all the posts." : "This profile has no posts that can be shown.";
+  }
+
+  /* A post's card: one line with its date, how many photos it has, a link to it and a button
+     that downloads it all (the caption shows on hover), then the video or each photo. */
+  function addPostCard(tab, parent, item) {
+    const doc = tab.document;
+    const id = item.id;
+    const photos = isPhotoPost(item) ? item.imagePost.images : null;
+    const count = photos ? photos.length : 1;
+    const taken = item.createTime ? new Date(item.createTime * 1000) : null;
+    const card = doc.createElement("article");
+    card.className = "post " + (photos ? "photos" : "video");
+    card.dataset.count = count;
+    const head = doc.createElement("div");
+    head.className = "post-head";
+    if (item.desc) head.title = item.desc;
+    const date = doc.createElement("span");
+    date.className = "date";
+    date.textContent = taken ? taken.toLocaleDateString() : "Post";
+    if (taken) date.title = taken.toLocaleString();
+    head.append(date);
+    if (count > 1) {
+      const badge = doc.createElement("span");
+      badge.className = "items-count";
+      badge.textContent = count;
+      badge.title = count + " photos";
+      head.append(badge);
+    }
+    const spacer = doc.createElement("span");
+    spacer.className = "spacer";
+    const link = doc.createElement("a");
+    link.href = "https://www.tiktok.com/@" + encodeURIComponent(item.author?.uniqueId || "i") + "/" + (photos ? "photo" : "video") + "/" + id;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.title = "Open the post on TikTok";
+    link.textContent = "Post ↗";
+    /* Downloading the whole post repaints the buttons of its photos too. */
+    const all = photos
+      ? makeSmallButton("stack", count > 1 ? "Download all " + count + " photos" : "Download the photo",
+        onProgress => downloadItem(id, onProgress), () => "a:" + id, repaintAll)
+      : makeSmallButton("download", "Download video", onProgress => downloadItem(id, onProgress), () => "v:" + id, repaintAll);
+    head.append(spacer, link, tabButtons(doc, ".pill{padding:2px}.pill button{width:28px;height:28px}.pill svg{width:16px;height:16px}", [all]));
+    const grid = doc.createElement("div");
+    grid.className = "grid";
+    card.append(head, grid);
+    parent.append(card);
+
+    if (photos) {
+      photos.forEach((image, index) => grid.append(photoTile(tab, item, image, index)));
+    } else {
+      grid.append(videoTile(tab, item));
+    }
+  }
+
+  function photoTile(tab, item, image, index) {
+    const doc = tab.document;
+    const count = item.imagePost.images.length;
+    const urls = image.imageURL?.urlList || [];
+    const tile = doc.createElement("div");
+    tile.className = "tile";
+    const element = doc.createElement("img");
+    element.loading = "lazy";
+    element.decoding = "async";
+    element.src = urls[0] || "";
+    if (image.imageWidth && image.imageHeight) tile.title = image.imageWidth + "×" + image.imageHeight;
+    const width = Math.max(2, String(count).length);
+    const name = fileBase(item) + " - " + String(index + 1).padStart(width, "0");
+    const open = () => {
+      const opened = openLoadingTab(tab);
+      if (!opened) return;
+      largestImage([urls])
+        .then(blob => showImage(opened, { blob }, name))
+        .catch(() => showImage(opened, { url: urls[0] }, name));
+    };
+    element.addEventListener("click", open);
+    tile.append(element, tabButtons(doc, ".bar{position:absolute;left:8px;top:8px;pointer-events:auto}", [
+      makeSmallButton("open", "Open in new tab", open),
+      makeSmallButton("download", "Download photo", () => savePhoto(item, index), () => "p:" + item.id + ":" + index, repaintAll),
+    ]));
+    if (count > 1) {
+      const badge = doc.createElement("span");
+      badge.className = "label";
+      badge.textContent = index + 1 + "/" + count;
+      tile.append(badge);
+    }
+    return tile;
+  }
+
+  /* The video plays here at its best size; it is loaded only once it is played. */
+  function videoTile(tab, item) {
+    const doc = tab.document;
+    const best = rankVariants(item)[0];
+    const tile = doc.createElement("div");
+    tile.className = "tile";
+    const element = doc.createElement("video");
+    element.controls = true;
+    element.preload = "none";
+    element.playsInline = true;
+    const cover = item.video?.originCover || item.video?.cover;
+    if (cover) element.poster = cover;
+    const sources = [...(best?.urls || []), item.video?.playAddr].filter(Boolean);
+    let tried = 0;
+    element.src = sources[0] || "";
+    element.addEventListener("error", () => {
+      if (++tried < sources.length) element.src = sources[tried];
+    });
+    if (best) tile.title = qualityTitle(best);
+    tile.append(element, tabButtons(doc, ".bar{position:absolute;left:8px;top:8px;pointer-events:auto}", [
+      makeSmallButton("download", "Download video" + (best ? " · " + qualityTitle(best) : ""),
+        onProgress => downloadItem(item.id, onProgress), () => "v:" + item.id, repaintAll),
+    ]));
+    if (best) {
+      const badge = doc.createElement("span");
+      badge.className = "label";
+      badge.textContent = qualityLabel(best);
+      tile.append(badge);
+    }
+    return tile;
+  }
+
+  /* Lays the cards out on the grid: as many columns as fit, and each card as wide as its photos,
+     up to the whole row; a card with more photos than fit in a row wraps them inside. */
+  function layoutPosts(list) {
+    const style = list.ownerDocument.defaultView.getComputedStyle(list);
+    const gap = parseFloat(style.columnGap) || 0;
+    const cell = parseFloat(style.getPropertyValue("--cell")) || 170;
+    const columns = Math.max(1, Math.floor((list.clientWidth + gap) / (cell + gap)));
+    list.style.setProperty("--columns", columns);
+    for (const card of list.children) {
+      const span = Math.min(columns, Number(card.dataset.count) || 1);
+      if (card.style.getPropertyValue("--span") !== String(span)) {
+        card.style.setProperty("--span", span);
+        card.style.gridColumn = "span " + span;
+      }
+    }
+  }
+
+  /* The arrow at the top right corner of the Videos tab's icon, in the tab's colour. */
+  const POSTS_CORNER_CSS = [
+    ":host{all:initial;position:absolute;z-index:1}",
+    "button{all:unset;box-sizing:border-box;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;cursor:pointer;color:inherit}",
+    "button:hover{opacity:.5}",
+    "button:focus-visible{outline:2px solid currentColor;outline-offset:1px}",
+    "svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}",
+  ].join("");
+
+  function makePostsCornerHost(uniqueId) {
+    const host = document.createElement(HOST_TAG);
+    host.dataset.id = "@" + uniqueId;
+    host.dataset.posts = "";
+    const root = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = POSTS_CORNER_CSS;
+    root.append(style, makeSmallButton("arrow", "All posts in a new tab, with every photo of photo posts", () => openAllPosts(uniqueId)));
+    host.refresh = () => {};
+    isolateEvents(host);
+    return host;
+  }
+
   /* ---------- Buttons ---------- */
 
   const ICONS = {
@@ -741,6 +1092,8 @@
     stack: ["M8.5 7.5h10a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-10a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z", "M3.5 15.5v-10a2 2 0 0 1 2-2h10", "m6.5 17.5 3.8-3.8a1.5 1.5 0 0 1 2.1 0l4 4"],
     /* A picture: the photo that is showing. */
     frame: ["M5 3.5h14A1.5 1.5 0 0 1 20.5 5v14a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V5A1.5 1.5 0 0 1 5 3.5z", "M9 7.5a1.75 1.75 0 1 1 0 3.5 1.75 1.75 0 0 1 0-3.5z", "m20.5 15.5-4.8-4.8a1.5 1.5 0 0 0-2.1 0L4 20.3"],
+    /* A bare arrow pointing up and right: the same, small enough for a tab's corner. */
+    arrow: ["M7.5 16.5 16.5 7.5", "M9 7.5h7.5V15"],
     busy: ["M12 3a9 9 0 1 0 9 9"],
     done: ["m5 12.5 4.5 4.5L19 7"],
     /* A thick check mark, among the filled icons. */
@@ -1063,13 +1416,13 @@
     button.repaint();
   }
 
-  function makeSmallButton(iconName, label, action, doneKey) {
+  function makeSmallButton(iconName, label, action, doneKey, after = null) {
     const button = document.createElement("button");
     button.type = "button";
     button.title = label;
     button.setAttribute("aria-label", label);
     button.append(icon(iconName));
-    wireButton(button, iconName, action, null, doneKey);
+    wireButton(button, iconName, action, after, doneKey);
     if (doneKey) button.repaint();
     return button;
   }
@@ -1300,6 +1653,27 @@
           existing?.remove();
           avatar.append(makeAvatarHost(uniqueId, avatar));
           trackHover(avatar);
+        }
+      }
+      /* All posts in a new tab: an arrow on the corner of the Videos tab's icon. */
+      const videosTab = uniqueId ? document.querySelector('[data-e2e="videos-tab"]') : null;
+      const videosIcon = videosTab?.querySelector("svg");
+      if (videosIcon && getComputedStyle(videosTab).position !== "static") {
+        let corner = videosTab.querySelector(":scope > " + HOST_TAG + "[data-posts]");
+        if (corner?.dataset.id !== "@" + uniqueId) {
+          corner?.remove();
+          corner = makePostsCornerHost(uniqueId);
+          videosTab.append(corner);
+        }
+        const tabBox = videosTab.getBoundingClientRect();
+        const iconBox = videosIcon.getBoundingClientRect();
+        if (iconBox.width) {
+          const left = Math.round(iconBox.right - tabBox.left - 8) + "px";
+          const top = Math.round(iconBox.top - tabBox.top - 11) + "px";
+          const colour = getComputedStyle(videosTab).color;
+          if (corner.style.left !== left) corner.style.left = left;
+          if (corner.style.top !== top) corner.style.top = top;
+          if (corner.style.color !== colour) corner.style.color = colour;
         }
       }
       /* Thumbnails outside the feed: profile, search, explore, the videos beside a video. */
