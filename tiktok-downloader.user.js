@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         TikTok Downloader
-// @version      0.2.17
+// @version      0.2.18
 // @description  Adds a download button to TikTok videos and photo posts that saves the best quality without a watermark.
 // @match        https://www.tiktok.com/*
 // @grant        GM_getValue
@@ -54,7 +54,7 @@
 
   const AUTO_START = true;
   /* Set by build.js to the userscript's version. */
-  const VERSION = "0.2.17";
+  const VERSION = "0.2.18";
   const HOST_TAG = "tiktok-downloader";
   const LOG = "[TikTok Downloader]";
   const CODEC_SETTING = "tiktokDownloader.codec";
@@ -120,6 +120,12 @@
 
   const isApiUrl = url => /\/api\//.test(String(url || ""));
 
+  /* The last address of TikTok's own API requests that carries its usual parameters (device,
+     browser, region …), as signed: the list of a profile's posts is asked for with the same. */
+  const rememberApiUrl = url => {
+    if (/[?&]device_id=/.test(String(url || ""))) shared.apiUrl = String(url);
+  };
+
   /* Wraps fetch and XMLHttpRequest once to read TikTok's API responses. The responses themselves
      are left untouched. */
   function startListening() {
@@ -131,6 +137,7 @@
       const result = pageFetch.apply(this, arguments);
       const url = typeof input === "string" ? input : input?.url;
       if (isApiUrl(url)) {
+        rememberApiUrl(url);
         result.then(response => response.clone().text()).then(collectText).catch(() => {});
       }
       return result;
@@ -139,6 +146,7 @@
     const open = page.XMLHttpRequest.prototype.open;
     page.XMLHttpRequest.prototype.open = function (method, url) {
       if (isApiUrl(url)) {
+        rememberApiUrl(url);
         this.addEventListener("load", () => {
           try {
             if (this.responseType === "" || this.responseType === "text") collectText(this.responseText);
@@ -772,9 +780,30 @@
 
   /* The next 16 posts, through TikTok's own fetch, which signs the request (unsigned, the answer
      is empty). Every post comes with all its versions, or its photos. */
-  async function fetchPostsPage(secUid, cursor) {
+  const SHARED_PARAMS = ["WebIdLastTime", "aid", "app_language", "app_name", "browser_language", "browser_name",
+    "browser_online", "browser_platform", "browser_version", "channel", "clientABVersions", "cookie_enabled",
+    "data_collection_enabled", "device_id", "device_platform", "focus_state", "history_len", "is_fullscreen",
+    "is_page_visible", "language", "odinId", "os", "priority_region", "region", "screen_height", "screen_width",
+    "tz_name", "user_is_login", "webcast_language"];
+
+  /* The parameters TikTok's own requests carry, from the last one seen or, failing that, one the
+     browser lists among the page's loads. */
+  function sharedParams() {
+    const urls = [shared.apiUrl, ...performance.getEntriesByType("resource").map(entry => entry.name).reverse()];
+    const url = urls.find(name => /^https:\/\/www\.tiktok\.com\/api\/.*[?&]device_id=/.test(name || ""));
+    const params = {};
+    if (url) {
+      const found = new URL(url).searchParams;
+      for (const name of SHARED_PARAMS) if (found.has(name)) params[name] = found.get(name);
+    }
+    return params;
+  }
+
+  async function fetchPostsPage(secUid, cursor, uniqueId) {
+    const profile = "https://www.tiktok.com/@" + encodeURIComponent(uniqueId);
     const query = new URLSearchParams({
-      aid: "1988", secUid, count: "16", cursor, coverFormat: "2", needPinnedItemIds: "true", post_item_list_request_type: "0",
+      aid: "1988", ...sharedParams(), from_page: "user", referer: profile, root_referer: profile, secUid,
+      count: "16", cursor, coverFormat: "2", needPinnedItemIds: "true", post_item_list_request_type: "0", enable_cache: "false",
     });
     const response = await page.fetch("/api/post/item_list/?" + query, { credentials: "include" });
     const data = response.ok ? await response.json().catch(() => null) : null;
@@ -890,7 +919,7 @@
       for (let attempt = 0; !result; attempt++) {
         end.textContent = "Loading more posts…";
         try {
-          result = await fetchPostsPage(secUid, cursor);
+          result = await fetchPostsPage(secUid, cursor, uniqueId);
         } catch (error) {
           if (!error.limited) {
             end.textContent = "";
