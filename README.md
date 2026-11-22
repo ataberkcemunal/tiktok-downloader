@@ -16,20 +16,6 @@ Files are named `username (Display Name) - caption - id`.
 1. Install [Tampermonkey](https://www.tampermonkey.net/).
 2. Open `tiktok-downloader.user.js` in this repository, click **Raw**, and let Tampermonkey install it.
 
-### For development
-
-`tiktok-downloader-loader.user.js` loads the built file from disk with `@require file:///…`, so changes show after a page reload.
-
-1. Change the path in it to your own checkout.
-2. Allow Tampermonkey to access file URLs in your browser's extension settings.
-
-Then:
-
-```bash
-node build.js                         # tiktok-downloader.js → tiktok-downloader.user.js
-node smoke-test.js tiktok-downloader.js
-```
-
 ## Notes
 
 - TikTok limits how fast a profile's list of posts can be loaded. After about ten pages in a few minutes it shows a puzzle on its page. Solve it there, and the "All posts" tab carries on by itself.

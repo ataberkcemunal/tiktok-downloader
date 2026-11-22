@@ -1,1 +1,8 @@
 .DS_Store
+
+# Local development files (the repo holds only the userscript)
+tiktok-downloader.js
+build.js
+smoke-test.js
+tiktok-downloader-loader.user.js
+PLAN.md
