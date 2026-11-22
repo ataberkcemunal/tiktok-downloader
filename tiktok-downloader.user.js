@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         TikTok Downloader
-// @version      0.2.18
+// @version      0.2.19
 // @description  Adds a download button to TikTok videos and photo posts that saves the best quality without a watermark.
 // @match        https://www.tiktok.com/*
 // @grant        GM_getValue
@@ -26,7 +26,7 @@
  * For a photo post, the button saves the photo that is showing (its label says which, "3/7"),
  * and a second one under it saves every photo (thumbnails save every photo). A profile's picture gets a button that saves it at its largest.
  *
- * On a profile, an arrow on the corner of the Videos tab's icon opens a tab with its posts as
+ * On a profile, "All posts" at the end of the row of tabs (Videos, Reposts, Liked) opens a tab with its posts as
  * cards, as in Instagram Downloader: each holds the video, or every photo of a photo post side
  * by side, at full size, with download buttons. More load as the tab is scrolled; a switch
  * shows only photo posts.
@@ -54,7 +54,7 @@
 
   const AUTO_START = true;
   /* Set by build.js to the userscript's version. */
-  const VERSION = "0.2.18";
+  const VERSION = "0.2.19";
   const HOST_TAG = "tiktok-downloader";
   const LOG = "[TikTok Downloader]";
   const CODEC_SETTING = "tiktokDownloader.codec";
@@ -1089,23 +1089,33 @@
     }
   }
 
-  /* The arrow at the top right corner of the Videos tab's icon, in the tab's colour. */
-  const POSTS_CORNER_CSS = [
-    ":host{all:initial;position:absolute;z-index:1}",
-    "button{all:unset;box-sizing:border-box;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;cursor:pointer;color:inherit}",
-    "button:hover{opacity:.5}",
-    "button:focus-visible{outline:2px solid currentColor;outline-offset:1px}",
-    "svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}",
+  /* All posts: one more item at the end of the row of tabs (Videos, Reposts, Liked …), an icon
+     and a label in the look of the tabs that aren't selected (copied from them), turning to
+     the selected tab's colour on hover. It opens a tab rather than switching, so no underline.
+     Where the row has no room for the label, only the icon shows. */
+  const POSTS_TAB_CSS = [
+    ":host{all:initial;display:flex;align-items:stretch;margin-left:var(--gap,32px);flex:none}",
+    "button{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:var(--icon-gap,4px);cursor:pointer;",
+    "color:var(--fg,#73747b);font:var(--font,600 18px/24px sans-serif);white-space:nowrap;transition:color .15s}",
+    "button:hover{color:var(--hover,currentColor)}",
+    "button:focus-visible{outline:2px solid currentColor;outline-offset:2px;border-radius:4px}",
+    "svg{width:1em;height:1em;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}",
+    ":host([data-compact]) .text{display:none}",
   ].join("");
 
-  function makePostsCornerHost(uniqueId) {
+  function makePostsTabHost(uniqueId) {
     const host = document.createElement(HOST_TAG);
     host.dataset.id = "@" + uniqueId;
     host.dataset.posts = "";
     const root = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = POSTS_CORNER_CSS;
-    root.append(style, makeSmallButton("arrow", "All posts in a new tab, with every photo of photo posts", () => openAllPosts(uniqueId)));
+    style.textContent = POSTS_TAB_CSS;
+    const button = makeSmallButton("open", "All posts in a new tab, with every photo of photo posts", () => openAllPosts(uniqueId));
+    const text = document.createElement("span");
+    text.className = "text";
+    text.textContent = "All posts";
+    button.append(text);
+    root.append(style, button);
     host.refresh = () => {};
     isolateEvents(host);
     return host;
@@ -1121,8 +1131,6 @@
     stack: ["M8.5 7.5h10a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-10a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z", "M3.5 15.5v-10a2 2 0 0 1 2-2h10", "m6.5 17.5 3.8-3.8a1.5 1.5 0 0 1 2.1 0l4 4"],
     /* A picture: the photo that is showing. */
     frame: ["M5 3.5h14A1.5 1.5 0 0 1 20.5 5v14a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V5A1.5 1.5 0 0 1 5 3.5z", "M9 7.5a1.75 1.75 0 1 1 0 3.5 1.75 1.75 0 0 1 0-3.5z", "m20.5 15.5-4.8-4.8a1.5 1.5 0 0 0-2.1 0L4 20.3"],
-    /* A bare arrow pointing up and right: the same, small enough for a tab's corner. */
-    arrow: ["M7.5 16.5 16.5 7.5", "M9 7.5h7.5V15"],
     busy: ["M12 3a9 9 0 1 0 9 9"],
     done: ["m5 12.5 4.5 4.5L19 7"],
     /* A thick check mark, among the filled icons. */
@@ -1684,25 +1692,47 @@
           trackHover(avatar);
         }
       }
-      /* All posts in a new tab: an arrow on the corner of the Videos tab's icon. */
+      /* All posts in a new tab: an item at the end of the row of tabs. */
       const videosTab = uniqueId ? document.querySelector('[data-e2e="videos-tab"]') : null;
-      const videosIcon = videosTab?.querySelector("svg");
-      if (videosIcon && getComputedStyle(videosTab).position !== "static") {
-        let corner = videosTab.querySelector(":scope > " + HOST_TAG + "[data-posts]");
-        if (corner?.dataset.id !== "@" + uniqueId) {
-          corner?.remove();
-          corner = makePostsCornerHost(uniqueId);
-          videosTab.append(corner);
+      const strip = videosTab?.parentElement;
+      if (strip) {
+        let item = strip.querySelector(":scope > " + HOST_TAG + "[data-posts]");
+        if (item?.dataset.id !== "@" + uniqueId) {
+          item?.remove();
+          item = makePostsTabHost(uniqueId);
+          strip.append(item);
+          hosts.add(item);
         }
-        const tabBox = videosTab.getBoundingClientRect();
-        const iconBox = videosIcon.getBoundingClientRect();
-        if (iconBox.width) {
-          const left = Math.round(iconBox.right - tabBox.left - 8) + "px";
-          const top = Math.round(iconBox.top - tabBox.top - 11) + "px";
-          const colour = getComputedStyle(videosTab).color;
-          if (corner.style.left !== left) corner.style.left = left;
-          if (corner.style.top !== top) corner.style.top = top;
-          if (corner.style.color !== colour) corner.style.color = colour;
+        const tabs = [...strip.querySelectorAll(':scope > [role="tab"]')].filter(tab => tab.getBoundingClientRect().width);
+        const plain = tabs.find(tab => tab.getAttribute("aria-selected") !== "true");
+        const selected = tabs.find(tab => tab.getAttribute("aria-selected") === "true");
+        const set = (name, value) => {
+          if (value && item.style.getPropertyValue(name) !== value) item.style.setProperty(name, value);
+        };
+        if (plain) {
+          const look = getComputedStyle(plain);
+          set("--fg", look.color);
+          set("--font", look.font);
+          set("--icon-gap", look.columnGap !== "normal" ? look.columnGap : "");
+        }
+        if (selected) set("--hover", getComputedStyle(selected).color);
+        /* The space between two tabs side by side. */
+        if (tabs.length > 1) {
+          const space = tabs[1].getBoundingClientRect().left - tabs[0].getBoundingClientRect().right;
+          if (space > 0) set("--gap", Math.round(space) + "px");
+        }
+        /* Too little room (the row overflows, or runs into the sorting buttons beside it): icon only. */
+        const next = strip.nextElementSibling?.getBoundingClientRect();
+        const box = item.getBoundingClientRect();
+        const room = strip.parentElement?.getBoundingClientRect().right ?? innerWidth;
+        const cramped = box.right > room + 1 || !!(next && next.width && box.right > next.left - 8);
+        if (!cramped && "compact" in item.dataset) {
+          /* Tried with the label again only if it would fit. */
+          item.removeAttribute("data-compact");
+          const wide = item.getBoundingClientRect();
+          if (wide.right > room + 1 || next && next.width && wide.right > next.left - 8) item.dataset.compact = "";
+        } else if (cramped) {
+          item.dataset.compact = "";
         }
       }
       /* Thumbnails outside the feed: profile, search, explore, the videos beside a video. */
