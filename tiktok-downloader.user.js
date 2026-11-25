@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         TikTok Downloader
-// @version      0.2.23
+// @version      0.2.25
 // @description  Adds a download button to TikTok videos and photo posts that saves the best quality without a watermark.
 // @match        https://www.tiktok.com/*
 // @grant        GM_getValue
@@ -55,7 +55,7 @@
 
   const AUTO_START = true;
   /* Set by build.js to the userscript's version. */
-  const VERSION = "0.2.23";
+  const VERSION = "0.2.25";
   const HOST_TAG = "tiktok-downloader";
   const LOG = "[TikTok Downloader]";
   const CODEC_SETTING = "tiktokDownloader.codec";
@@ -1722,7 +1722,12 @@
       /* The row is the left half of a line whose right half holds the share icons. */
       const line = row?.parentElement?.parentElement;
       if (line?.parentElement) {
-        const id = location.pathname.match(/\/(?:video|photo)\/(\d{8,})/)?.[1] || null;
+        /* The address names the post, except in the viewer opened from a video shared in
+           messages (the address stays as it was): there the link under the description (Copy
+           link) names it, or for a video its player (xgwrapper-<n>-<id>). */
+        const id = location.pathname.match(/\/(?:video|photo)\/(\d{8,})/)?.[1] ||
+          document.querySelector('[data-e2e="browse-video-link"]')?.textContent.match(/\/(?:video|photo)\/(\d{8,})/)?.[1] ||
+          document.querySelector('[data-e2e="browse-video"] [id^="xgwrapper-"]')?.id.match(/-(\d{8,})$/)?.[1] || null;
         const existing = row.parentElement.querySelector(":scope > " + HOST_TAG) ||
           line.parentElement.querySelector(":scope > " + HOST_TAG + "[data-below]");
         let host = existing && existing.dataset.id === id ? existing : null;
